@@ -244,22 +244,7 @@ function calcSuspendDecreaseForMonth(
   return result;
 }
  
-function useLS<T>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const [v, setV] = useState<T>(() => {
-    try {
-      const stored = localStorage.getItem(key);
-      return stored ? (JSON.parse(stored) as T) : initial;
-    } catch {
-      return initial;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(key, JSON.stringify(v));
-    } catch {}
-  }, [key, v]);
-  return [v, setV];
-}
+
  
 /* ---------- CSV ---------- */
 function toCSV(rows: any[]): string {
