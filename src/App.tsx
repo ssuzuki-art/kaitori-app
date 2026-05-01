@@ -1046,6 +1046,7 @@ function calcFutureCUPSummary(
    ========================================================================================= */
 export default function App() {
   
+  const [isAdmin, setIsAdmin] = useLS<boolean>("isAdmin", false);
   const [clients, setClients] = useState<Client[]>([]);
   const [changeLogs, setChangeLogs] = useState<ChangeLog[]>([]);
   const [metrics, setMetrics] = useState<BusinessMetric[]>([]);
@@ -1214,30 +1215,19 @@ export default function App() {
       <div className="flex-1 min-w-0 flex flex-col">
         {/* 上部フィルターバー */}
         {(view === "dashboard" ||
-          view === "clients" ||
-          view === "cup-analysis") && (
-          <header className="bg-white border-b border-slate-200 px-6 py-3">
-            <div className="flex items-center gap-4 flex-wrap">
-              <FilterField label="対象月">
-                <select
-                  className={`${css.input} w-32`}
-                  value={targetMonth}
-                  onChange={(e) => setTargetMonth(e.target.value)}
-                >
-                  {monthOptions.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </FilterField>
-              <FilterField label="商材">
-                <MultiPicker
-                  items={CATEGORIES.map((c) => ({ id: c, name: c }))}
-                  selected={filterCats}
-                  setSelected={setFilterCats}
-                  placeholderAll="全商材"
-                />
+          {view === "clients" && (
+            <ClientsList
+              metrics={metrics}
+              targetMonth={targetMonth}
+              clients={filteredClients}
+              owners={owners}
+              changeLogs={changeLogs}
+              setClients={setClients}
+              setChangeLogs={setChangeLogs}
+              setView={setView}
+              isAdmin={isAdmin}
+            />
+          )}
               </FilterField>
               <FilterField label="営業担当">
                 <MultiPicker
@@ -1279,15 +1269,17 @@ export default function App() {
           )}
           {view === "clients" && (
             <ClientsList
-            　metrics={metrics}
+              metrics={metrics}
               targetMonth={targetMonth}
               clients={filteredClients}
               owners={owners}
               changeLogs={changeLogs}
               setClients={setClients}
-   　　　　　　　setChangeLogs={setChangeLogs}
+              setChangeLogs={setChangeLogs}
               setView={setView}
+              isAdmin={isAdmin}
             />
+          )}
           )}
           {view === "input-choice" && <InputChoice setView={setView} />}
           {view === "register" && (
@@ -1312,9 +1304,13 @@ export default function App() {
           )}
           {view === "metrics" && (
             <MetricsForm
+              brands={brands}
+              onAdded={() => {
+                setView("dashboard");
+              }}
               metrics={metrics}
               setMetrics={setMetrics}
-              targetMonth={targetMonth}
+              isAdmin={isAdmin}
             />
           )}
           {view === "cup-analysis" && (
@@ -1329,6 +1325,8 @@ export default function App() {
           )}
           {view === "masters" && (
             <Masters
+              isAdmin={isAdmin}
+              setIsAdmin={setIsAdmin}
               owners={owners}
               setOwners={setOwners}
               brands={brands}
@@ -2561,15 +2559,19 @@ function ChangeForm({
  
 /* ---------- 事業数字入力 ---------- */
 function MetricsForm({
+  brands,
+  onAdded,
   metrics,
   setMetrics,
-  targetMonth,
+  isAdmin,
 }: {
+  brands: BrandMaster[];
+  onAdded: () => void;
   metrics: BusinessMetric[];
   setMetrics: React.Dispatch<React.SetStateAction<BusinessMetric[]>>;
-  targetMonth: string;
+  isAdmin: boolean;
 }) {
-  const [month, setMonth] = useState<string>(targetMonth);
+  const [month, setMonth] = useState<string>(todayMonth());
   const [draft, setDraft] = useState<Record<string, Partial<BusinessMetric>>>({});
  
   useEffect(() => {
@@ -2610,6 +2612,11 @@ function MetricsForm({
     <div className={css.card}>
       <div className={css.cardHeader}>事業数字入力</div>
       <div className={`${css.cardBody} space-y-4`}>
+        {!isAdmin && (
+          <div className="border border-yellow-300 bg-yellow-50 rounded p-3 text-sm text-yellow-800">
+            🔒 事業数字の編集は管理者のみが可能です
+          </div>
+        )}
         <div className="flex gap-2 items-center">
           <div className={css.label}>対象月</div>
           <input
@@ -2617,6 +2624,7 @@ function MetricsForm({
             type="month"
             value={month}
             onChange={(e) => setMonth(e.target.value)}
+            disabled={!isAdmin}
           />
         </div>
         <div className="overflow-x-auto">
@@ -2657,11 +2665,13 @@ function MetricsForm({
                         type="number"
                         value={d.revenue ?? ""}
                         onChange={(e) =>
+                          isAdmin &&
                           setDraft({
                             ...draft,
                             [cat]: { ...d, revenue: Number(e.target.value) },
                           })
                         }
+                        disabled={!isAdmin}
                       />
                     </td>
                     <td className={css.td}>
@@ -2670,6 +2680,7 @@ function MetricsForm({
                         type="number"
                         value={d.grossProfit ?? ""}
                         onChange={(e) =>
+                          isAdmin &&
                           setDraft({
                             ...draft,
                             [cat]: {
@@ -2678,6 +2689,7 @@ function MetricsForm({
                             },
                           })
                         }
+                        disabled={!isAdmin}
                       />
                     </td>
                     <td className={css.td}>{rev > 0 ? pct(gp / rev) : "—"}</td>
@@ -2687,11 +2699,13 @@ function MetricsForm({
                         type="number"
                         value={d.adCost ?? ""}
                         onChange={(e) =>
+                          isAdmin &&
                           setDraft({
                             ...draft,
                             [cat]: { ...d, adCost: Number(e.target.value) },
                           })
                         }
+                        disabled={!isAdmin}
                       />
                     </td>
                     <td className={css.td}>
@@ -2700,11 +2714,13 @@ function MetricsForm({
                         type="number"
                         value={d.cv ?? ""}
                         onChange={(e) =>
+                          isAdmin &&
                           setDraft({
                             ...draft,
                             [cat]: { ...d, cv: Number(e.target.value) },
                           })
                         }
+                        disabled={!isAdmin}
                       />
                     </td>
                     <td className={css.td}>{cv > 0 ? yen(ad / cv) : "—"}</td>
@@ -2714,6 +2730,7 @@ function MetricsForm({
                         type="number"
                         value={d.validUsers ?? ""}
                         onChange={(e) =>
+                          isAdmin &&
                           setDraft({
                             ...draft,
                             [cat]: {
@@ -2722,6 +2739,7 @@ function MetricsForm({
                             },
                           })
                         }
+                        disabled={!isAdmin}
                       />
                     </td>
                     <td className={css.td}>
@@ -2734,7 +2752,7 @@ function MetricsForm({
           </table>
         </div>
         <div className="text-right">
-          <button className={css.btn} onClick={save}>
+          <button className={css.btn} onClick={save} disabled={!isAdmin}>
             {month} の事業数字を保存
           </button>
         </div>
@@ -2742,9 +2760,55 @@ function MetricsForm({
     </div>
   );
 }
- 
+
+function AdminLoginForm({
+  setIsAdmin,
+}: {
+  setIsAdmin: React.Dispatch<React.SetStateAction<boolean>>;
+}) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const ADMIN_PASSWORD = "kaitori2024"; // 本来は環境変数から読み込む
+
+  const handleLogin = () => {
+    if (password === ADMIN_PASSWORD) {
+      setIsAdmin(true);
+      setPassword("");
+      setError("");
+    } else {
+      setError("パスワードが正しくありません");
+      setPassword("");
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <input
+          className={css.input}
+          type="password"
+          placeholder="管理者パスワード"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleLogin();
+          }}
+        />
+        <button className={css.btn} onClick={handleLogin}>
+          ログイン
+        </button>
+      </div>
+      {error && (
+        <div className="text-sm text-red-600 font-medium">{error}</div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- マスタ / CSV ---------- */
 function Masters({
+  isAdmin,
+  setIsAdmin,
   owners,
   setOwners,
   brands,
@@ -2756,6 +2820,8 @@ function Masters({
   metrics,
   setMetrics,
 }: {
+  isAdmin: boolean;
+  setIsAdmin: React.Dispatch<React.SetStateAction<boolean>>;
   owners: SalesOwner[];
   setOwners: React.Dispatch<React.SetStateAction<SalesOwner[]>>;
   brands: BrandMaster[];
@@ -2767,7 +2833,7 @@ function Masters({
   metrics: BusinessMetric[];
   setMetrics: React.Dispatch<React.SetStateAction<BusinessMetric[]>>;
 }) {
-  const [tab, setTab] = useState<"owners" | "brands" | "csv">("owners");
+  const [tab, setTab] = useState<"owners" | "brands" | "csv" | "admin">("owners");
   const [newOwner, setNewOwner] = useState("");
   const [newBrandCat, setNewBrandCat] = useState<string>(CATEGORIES[0]);
   const [newBrandName, setNewBrandName] = useState("");
@@ -2800,37 +2866,52 @@ function Masters({
         {tabBtn("owners", "営業担当")}
         {tabBtn("brands", "ブランドマスタ")}
         {tabBtn("csv", "CSV import / export")}
+        {isAdmin && tabBtn("admin", "⚙ 管理者設定")}
       </div>
- 
+
+      {!isAdmin && (
+        <div className={css.card}>
+          <div className={css.cardHeader}>🔑 管理者権限へのアクセス</div>
+          <div className={`${css.cardBody} space-y-3`}>
+            <div className="text-sm text-slate-600">
+              マスタやデータを編集するには管理者権限が必要です。
+            </div>
+            <AdminLoginForm setIsAdmin={setIsAdmin} />
+          </div>
+        </div>
+      )}
+
       {tab === "owners" && (
         <div className={css.card}>
           <div className={css.cardHeader}>営業担当マスタ</div>
           <div className={`${css.cardBody} space-y-3`}>
-            <div className="flex gap-2">
-              <input
-                className={css.input}
-                placeholder="担当者名"
-                value={newOwner}
-                onChange={(e) => setNewOwner(e.target.value)}
-              />
-              <button
-                className={css.btn}
-                onClick={() => {
-                  if (!newOwner) return;
-                  setOwners([
-                    ...owners,
-                    {
-                      ownerId: "OW" + uid(),
-                      ownerName: newOwner,
-                      isActive: true,
-                    },
-                  ]);
-                  setNewOwner("");
-                }}
-              >
-                追加
-              </button>
-            </div>
+            {isAdmin && (
+              <div className="flex gap-2">
+                <input
+                  className={css.input}
+                  placeholder="担当者名"
+                  value={newOwner}
+                  onChange={(e) => setNewOwner(e.target.value)}
+                />
+                <button
+                  className={css.btn}
+                  onClick={() => {
+                    if (!newOwner) return;
+                    setOwners([
+                      ...owners,
+                      {
+                        ownerId: "OW" + uid(),
+                        ownerName: newOwner,
+                        isActive: true,
+                      },
+                    ]);
+                    setNewOwner("");
+                  }}
+                >
+                  追加
+                </button>
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className={css.table}>
                 <thead>
@@ -2849,6 +2930,7 @@ function Masters({
                           className={css.input}
                           value={o.ownerName}
                           onChange={(e) =>
+                            isAdmin &&
                             setOwners(
                               owners.map((x) =>
                                 x.ownerId === o.ownerId
@@ -2857,6 +2939,7 @@ function Masters({
                               )
                             )
                           }
+                          disabled={!isAdmin}
                         />
                       </td>
                       <td className={css.td}>
@@ -2864,6 +2947,7 @@ function Masters({
                           type="checkbox"
                           checked={o.isActive}
                           onChange={(e) =>
+                            isAdmin &&
                             setOwners(
                               owners.map((x) =>
                                 x.ownerId === o.ownerId
@@ -2872,6 +2956,7 @@ function Masters({
                               )
                             )
                           }
+                          disabled={!isAdmin}
                         />
                       </td>
                     </tr>
@@ -2887,43 +2972,45 @@ function Masters({
         <div className={css.card}>
           <div className={css.cardHeader}>ブランドマスタ</div>
           <div className={`${css.cardBody} space-y-3`}>
-            <div className="flex gap-2 flex-wrap">
-              <select
-                className={`${css.input} w-32`}
-                value={newBrandCat}
-                onChange={(e) => setNewBrandCat(e.target.value)}
-              >
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-              <input
-                className={css.input}
-                placeholder="ブランド名"
-                value={newBrandName}
-                onChange={(e) => setNewBrandName(e.target.value)}
-              />
-              <button
-                className={css.btn}
-                onClick={() => {
-                  if (!newBrandName) return;
-                  setBrands([
-                    ...brands,
-                    {
-                      brandId: "BR" + uid(),
-                      category: newBrandCat,
-                      brandName: newBrandName,
-                      isActive: true,
-                    },
-                  ]);
-                  setNewBrandName("");
-                }}
-              >
-                追加
-              </button>
-            </div>
+            {isAdmin && (
+              <div className="flex gap-2 flex-wrap">
+                <select
+                  className={`${css.input} w-32`}
+                  value={newBrandCat}
+                  onChange={(e) => setNewBrandCat(e.target.value)}
+                >
+                  {CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className={css.input}
+                  placeholder="ブランド名"
+                  value={newBrandName}
+                  onChange={(e) => setNewBrandName(e.target.value)}
+                />
+                <button
+                  className={css.btn}
+                  onClick={() => {
+                    if (!newBrandName) return;
+                    setBrands([
+                      ...brands,
+                      {
+                        brandId: "BR" + uid(),
+                        category: newBrandCat,
+                        brandName: newBrandName,
+                        isActive: true,
+                      },
+                    ]);
+                    setNewBrandName("");
+                  }}
+                >
+                  追加
+                </button>
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className={css.table}>
                 <thead>
@@ -2943,6 +3030,7 @@ function Masters({
                           type="checkbox"
                           checked={b.isActive}
                           onChange={(e) =>
+                            isAdmin &&
                             setBrands(
                               brands.map((x) =>
                                 x.brandId === b.brandId
@@ -2961,7 +3049,33 @@ function Masters({
           </div>
         </div>
       )}
- 
+
+      {tab === "admin" && isAdmin && (
+        <div className={css.card}>
+          <div className={css.cardHeader}>🔐 管理者設定</div>
+          <div className={`${css.cardBody} space-y-4`}>
+            <div className="border border-green-300 bg-green-50 rounded p-4 text-sm text-green-800 space-y-2">
+              <div className="font-semibold">✓ 管理者権限を有効にしました</div>
+              <ul className="list-disc list-inside space-y-1 mt-2">
+                <li>営業担当マスタの編集・削除</li>
+                <li>ブランドマスタの編集・削除</li>
+                <li>加盟店の削除</li>
+                <li>事業数字の編集・保存</li>
+                <li>CSV import/export</li>
+              </ul>
+            </div>
+            <div className="border-t pt-4">
+              <button
+                className="px-3 py-1.5 rounded border border-red-300 bg-red-50 text-red-600 text-sm hover:bg-red-100"
+                onClick={() => setIsAdmin(false)}
+              >
+                管理者権限を解除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {tab === "csv" && (
         <div className={css.card}>
           <div className={css.cardHeader}>CSV import / export</div>
@@ -4676,6 +4790,7 @@ function ClientsList({
   setClients,
   setChangeLogs,
   setView,
+  isAdmin,
 }: {
   clients: Client[];
   owners: SalesOwner[];
@@ -4685,6 +4800,7 @@ function ClientsList({
   setClients: React.Dispatch<React.SetStateAction<Client[]>>;
   setChangeLogs: React.Dispatch<React.SetStateAction<ChangeLog[]>>;
   setView: React.Dispatch<React.SetStateAction<ViewKey>>;
+  isAdmin: boolean;
 }) {
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState<Status | "all">("all");
@@ -4829,28 +4945,30 @@ function ClientsList({
         終了予定: {getLatestEndDate(changeLogs, c.billingId) || "未定"}
       </div>
     )}
-    <button
-      className="text-[10px] px-2 py-0.5 rounded border border-red-300 text-red-600 hover:bg-red-50"
-      onClick={(e) => {
-        e.stopPropagation();
+    {isAdmin && (
+      <button
+        className="text-[10px] px-2 py-0.5 rounded border border-red-300 text-red-600 hover:bg-red-50"
+        onClick={(e) => {
+          e.stopPropagation();
 
-        const ok = window.confirm(
-          `${c.companyName}を削除しますか？\nこの加盟店の変更履歴も削除され、数字にも反映されなくなります。`
-        );
+          const ok = window.confirm(
+            `${c.companyName}を削除しますか？\nこの加盟店の変更履歴も削除され、数字にも反映されなくなります。`
+          );
 
-        if (!ok) return;
+          if (!ok) return;
 
-        setClients((prev) =>
-          prev.filter((x) => x.billingId !== c.billingId)
-        );
+          setClients((prev) =>
+            prev.filter((x) => x.billingId !== c.billingId)
+          );
 
-        setChangeLogs((prev) =>
-          prev.filter((x) => x.billingId !== c.billingId)
-        );
-      }}
-    >
-      削除
-    </button>
+          setChangeLogs((prev) =>
+            prev.filter((x) => x.billingId !== c.billingId)
+          );
+        }}
+      >
+        削除
+      </button>
+    )}
   </div>
 </div>
               <div className="text-xs text-slate-500 space-y-1">
