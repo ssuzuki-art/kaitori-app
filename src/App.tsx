@@ -1046,35 +1046,56 @@ function calcFutureCUPSummary(
    ========================================================================================= */
 export default function App() {
   
-  const [clients, setClients] = useLS<Client[]>("mk_clients", []);
-  const [changeLogs, setChangeLogs] = useLS<ChangeLog[]>("mk_changeLogs", []);
-  const [metrics, setMetrics] = useLS<BusinessMetric[]>("mk_metrics", []);
-  const [owners, setOwners] = useLS<SalesOwner[]>("mk_owners", [
-    { ownerId: "OW001", ownerName: "鈴木翔太", isActive: true },
-    { ownerId: "OW002", ownerName: "佐藤美咲", isActive: true },
-  ]);
-  const [brands, setBrands] = useLS<BrandMaster[]>("mk_brands", []);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [changeLogs, setChangeLogs] = useState<ChangeLog[]>([]);
+  const [metrics, setMetrics] = useState<BusinessMetric[]>([]);
+  const [owners, setOwners] = useState<SalesOwner[]>([]);
+  const [brands, setBrands] = useState<BrandMaster[]>([]);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-  const loadFromSupabase = async () => {
+  const load = async () => {
     const { data } = await supabase
       .from("app_state")
       .select("data")
       .eq("id", "main")
       .single();
 
-    if (!data?.data) return;
+    if (!data?.data) {
+      setLoaded(true);
+      return;
+    }
 
-    const saved = data.data;
+    const d = data.data;
 
-    if (saved.clients) setClients(saved.clients);
-    if (saved.changeLogs) setChangeLogs(saved.changeLogs);
-    if (saved.metrics) setMetrics(saved.metrics);
-    if (saved.owners) setOwners(saved.owners);
-    if (saved.brands) setBrands(saved.brands);
+    setClients(d.clients || []);
+    setChangeLogs(d.changeLogs || []);
+    setMetrics(d.metrics || []);
+    setOwners(d.owners || []);
+    setBrands(d.brands || []);
+
+    setLoaded(true);
   };
 
-  loadFromSupabase();
+  load();
 }, []);
+ useEffect(() => {
+  if (!loaded) return;
+
+  const save = async () => {
+    await supabase.from("app_state").upsert({
+      id: "main",
+      data: {
+        clients,
+        changeLogs,
+        metrics,
+        owners,
+        brands,
+      },
+    });
+  };
+
+  save();
+}, [loaded, clients, changeLogs, metrics, owners, brands]);
   useEffect(() => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -1106,22 +1127,6 @@ export default function App() {
     setClients(updatedClients);
   }
 }, [clients, setClients]);
-useEffect(() => {
-  const saveToSupabase = async () => {
-    await supabase.from("app_state").upsert({
-      id: "main",
-      data: {
-        clients,
-        changeLogs,
-        metrics,
-        owners,
-        brands,
-      },
-    });
-  };
-
-  saveToSupabase();
-}, [clients, changeLogs, metrics, owners, brands]);
   const [view, setView] = useState<ViewKey>("dashboard");
   const [targetMonth, setTargetMonth] = useState<string>(todayMonth());
   const [filterCats, setFilterCats] = useState<string[]>([]); // 空=全選択
