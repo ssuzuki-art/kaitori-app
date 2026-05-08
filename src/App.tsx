@@ -33,7 +33,10 @@ type ChangeType =
   | "brand_stop"
   | "cross_sell"
   | "up_sell"
-  | "down_sell";
+  | "down_sell"
+  | "category_change"
+  | "area_change";
+  
 type RecoveryPossibility = "high" | "medium" | "low" | "none" | "unknown";
 
 type ViewKey =
@@ -87,6 +90,10 @@ interface ChangeLog {
   reason: string;
   recoveryPossibility: RecoveryPossibility;
   action: string;
+  newCategories?: string[];
+  newAreas?: string[];
+  newCategoryBudgets?: CategoryBudgets;
+  newBrandSelections?: BrandSelection[];
 }
 interface BusinessMetric {
   month: string;
@@ -130,6 +137,8 @@ const CHANGE_TYPE_LABEL: Record<ChangeType, string> = {
   cross_sell: "クロスセル",
   up_sell: "アップセル",
   down_sell: "ダウンセル",
+  category_change: "商材変更",
+  area_change: "エリア変更",
 };
 const RECOVERY_LABEL: Record<RecoveryPossibility, string> = {
   high: "高",
@@ -2166,6 +2175,11 @@ function ChangeForm({
   const [recovery, setRecovery] = useState<RecoveryPossibility>("unknown");
   const [action, setAction] = useState<string>("");
   const [error, setError] = useState("");
+  const [newCategories, setNewCategories] = useState<string[]>([]);
+  const [newAreas, setNewAreas] = useState<string[]>([]);
+  const [newCategoryBudgets, setNewCategoryBudgets] = useState<CategoryBudgets>({});
+　const [newBrandSelections, setNewBrandSelections] = useState<BrandSelection[]>([]);
+
 
   const fetchClient = () => {
     const c = clients.find((x) => x.billingId === billingIdInput);
@@ -2180,6 +2194,19 @@ function ChangeForm({
     setAffectedBrands([]);
     setAffectedAreas([]);
     setDecreasedByCategory({});
+    setNewCategories(c.categories);
+　　 setNewAreas(c.areas);
+    setNewCategoryBudgets({ ...c.categoryBudgets });
+    setNewBrandSelections(
+      c.brandSelections?.length
+    ? c.brandSelections
+    : c.categories.map((cat) => ({
+        category: cat,
+        selectionType: "all",
+        selectedBrandIds: [],
+      }))
+);
+
   };
 
   const totalDecByCat = useMemo(
@@ -2191,6 +2218,51 @@ function ChangeForm({
     [decreasedByCategory]
   );
 
+ const newCategoryBudgetTotal = useMemo(
+  () =>
+    newCategories.reduce(
+      (s, cat) => s + (Number(newCategoryBudgets[cat]) || 0),
+      0
+    ),
+   [newCategories, newCategoryBudgets]
+   );
+
+  const toggleNewCategory = (cat: string) => {
+   setNewCategories((prev) => {
+    const exists = prev.includes(cat);
+    const next = exists ? prev.filter((c) => c !== cat) : [...prev, cat];
+
+    setNewCategoryBudgets((cur) => {
+      const copy = { ...cur };
+      if (exists) delete copy[cat];
+      else copy[cat] = target?.categoryBudgets?.[cat] ?? 0;
+      return copy;
+     });
+
+    setNewBrandSelections((cur) => {
+      if (exists) return cur.filter((b) => b.category !== cat);
+      const existing = target?.brandSelections?.find((b) => b.category === cat);
+      return [
+        ...cur,
+        existing || {
+          category: cat,
+          selectionType: "all",
+          selectedBrandIds: [],
+        },
+      ];
+    });
+
+    return next;
+  });
+ };
+
+ const toggleNewArea = (area: string) => {
+  setNewAreas((prev) =>
+    prev.includes(area) ? prev.filter((x) => x !== area) : [...prev, area]
+  );
+ };
+
+
   const submit = () => {
     if (!target) return;
     if (!effectiveDate) {
@@ -2199,6 +2271,21 @@ function ChangeForm({
     }
     let dec = decreasedBudget;
     let decByCat: CategoryBudgets | undefined = undefined;
+
+    if (changeType === "category_change") {
+  if (newCategories.length === 0) {
+    setError("変更後の商材を1つ以上選択してください");
+    return;
+  }
+ }
+
+ if (changeType === "area_change") {
+  if (newAreas.length === 0) {
+    setError("変更後のエリアを1つ以上選択してください");
+    return;
+  }
+ }
+
 
     if (changeType === "category_stop") {
       decByCat = {};
@@ -2282,9 +2369,25 @@ function ChangeForm({
       affectedBrands,
       affectedAreas,
       previousMonthlyBudget: target.monthlyBudget,
-      newMonthlyBudget: changeType === "activate" ? target.monthlyBudget : target.monthlyBudget - dec,
-      decreasedBudget: changeType === "activate" ? 0 : dec,
+      newMonthlyBudget:
+        changeType === "category_change"
+          ? newCategoryBudgetTotal
+          : changeType === "activate"
+          ? target.monthlyBudget
+          : target.monthlyBudget - dec,
+      decreasedBudget:
+        changeType === "category_change"
+          ? Math.max(0, target.monthlyBudget - newCategoryBudgetTotal)
+          : changeType === "activate"
+          ? 0
+          : dec,
       decreasedByCategory: decByCat,
+      newCategories: changeType === "category_change" ? newCategories : undefined,
+      newAreas: changeType === "area_change" ? newAreas : undefined,
+      newCategoryBudgets:
+        changeType === "category_change" ? newCategoryBudgets : undefined,
+      newBrandSelections:
+        changeType === "category_change" ? newBrandSelections : undefined,
       reason,
       recoveryPossibility: recovery,
       action,
@@ -2444,6 +2547,28 @@ function ChangeForm({
                   ),
                 },
                 monthlyBudget: c.monthlyBudget - dec,
+              }
+            : c
+        )
+      );
+    } else if (changeType === "category_change") {
+      setClients(
+        clients.map((c) =>
+          c.billingId === target.billingId
+            ? {
+                ...c,
+                categories: newCategories,
+              }
+            : c
+        )
+      );
+    } else if (changeType === "area_change") {
+      setClients(
+        clients.map((c) =>
+          c.billingId === target.billingId
+            ? {
+                ...c,
+                areas: newAreas,
               }
             : c
         )
@@ -2810,6 +2935,108 @@ function ChangeForm({
                     </div>
                   </div>
                 )}
+　　　　　　　　　　
+　　　　　　　　　　{changeType === "category_change" && (
+  <div className="space-y-4">
+    <div>
+      <div className={css.label}>変更後の商材</div>
+      <div className="flex flex-wrap gap-2 mt-2">
+        {CATEGORIES.map((cat) => (
+          <label
+            key={cat}
+            className={`px-3 py-1 rounded border cursor-pointer text-sm ${
+              newCategories.includes(cat)
+                ? "bg-slate-900 text-white border-slate-900"
+                : "bg-white border-slate-300"
+            }`}
+          >
+            <input
+              type="checkbox"
+              className="hidden"
+              checked={newCategories.includes(cat)}
+              onChange={() => toggleNewCategory(cat)}
+            />
+            {cat}
+          </label>
+        ))}
+      </div>
+    </div>
+
+    {newCategories.length > 0 && (
+      <div>
+        <div className={css.label}>変更後の商材別予算</div>
+        <div className="grid md:grid-cols-2 gap-2 mt-2">
+          {newCategories.map((cat) => (
+            <div key={cat} className="flex items-center gap-2">
+              <span className="w-20 text-sm">{cat}</span>
+              <input
+                className={css.input}
+                type="number"
+                value={newCategoryBudgets[cat] ?? ""}
+                onChange={(e) =>
+                  setNewCategoryBudgets({
+                    ...newCategoryBudgets,
+                    [cat]: Number(e.target.value),
+                  })
+                }
+              />
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 text-sm">
+          変更後の月間予算: <b>{yen(newCategoryBudgetTotal)}</b>
+        </div>
+      </div>
+    )}
+  </div>
+)}
+
+{changeType === "area_change" && (
+  <div>
+    <div className={css.label}>変更後のエリア</div>
+    <div className="flex gap-2 mt-2 mb-2">
+      <button
+        type="button"
+        className={css.btnOutline}
+        onClick={() => setNewAreas([...PREFECTURES])}
+      >
+        全国を選択
+      </button>
+      <button
+        type="button"
+        className={css.btnOutline}
+        onClick={() => setNewAreas([])}
+      >
+        すべて解除
+      </button>
+      <span className="text-xs text-slate-500 self-center">
+        {newAreas.length}都道府県選択中
+      </span>
+    </div>
+
+    <div className="flex flex-wrap gap-1 mt-2 max-h-44 overflow-auto border border-slate-200 rounded p-2">
+      {PREFECTURES.map((p) => (
+        <label
+          key={p}
+          className={`px-2 py-0.5 rounded border cursor-pointer text-xs ${
+            newAreas.includes(p)
+              ? "bg-slate-900 text-white border-slate-900"
+              : "bg-white border-slate-300"
+          }`}
+        >
+          <input
+            type="checkbox"
+            className="hidden"
+            checked={newAreas.includes(p)}
+            onChange={() => toggleNewArea(p)}
+          />
+          {p}
+        </label>
+      ))}
+    </div>
+  </div>
+　)}
+
 
                 <div className="grid md:grid-cols-3 gap-3">
                   <Field label="復活見込み">
