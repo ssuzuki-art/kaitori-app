@@ -26,6 +26,7 @@ type ChangeType =
   | "withdraw"
   | "suspend"
   | "resume"
+  | "activate"
   | "reduce"
   | "category_stop"
   | "area_reduce"
@@ -120,8 +121,9 @@ const PREFECTURES = [
 const CHANGE_TYPE_LABEL: Record<ChangeType, string> = {
   withdraw: "退会",
   suspend: "停止",
-  reduce: "減額",
   resume: "再開",
+  activate: "配信中に変更",
+  reduce: "減額",
   category_stop: "商材停止",
   area_reduce: "エリア縮小",
   brand_stop: "ブランド停止",
@@ -349,8 +351,9 @@ function calcMonthlyImpact(
   const otherDec = initCatRecord();
   const stockHeld = initCatRecord();
 
-  // 新規獲得：startDateが当月の加盟店を日割り
+  // 新規獲得：startDateが当月でかつ active の加盟店を日割り
   for (const c of clients) {
+    if (c.status !== "active") continue;
     const sd = parseD(c.startDate);
     if (!sd) continue;
     if (sd.getFullYear() === year && sd.getMonth() + 1 === month) {
@@ -362,8 +365,9 @@ function calcMonthlyImpact(
     }
   }
 
-  // 保持予算（過去退会済みは除外）
+  // 保持予算（active の加盟店のみ。過去退会済みは除外）
   for (const c of clients) {
+    if (c.status !== "active") continue;
     const sd = parseD(c.startDate);
     if (!sd) continue;
     if (sd > monthEnd) continue;
@@ -486,7 +490,12 @@ function calcClientImpact(
   let otherDec = 0;
 
   const sd = parseD(client.startDate);
-  if (sd && sd.getFullYear() === year && sd.getMonth() + 1 === month) {
+  if (
+    client.status === "active" &&
+    sd &&
+    sd.getFullYear() === year &&
+    sd.getMonth() + 1 === month
+  ) {
     const ratio = (dim - sd.getDate() + 1) / dim;
     for (const cat of CATEGORIES) {
       newAcq += (budgets[cat] ?? 0) * ratio;
@@ -630,8 +639,9 @@ function calcOwnerSummary(
   const idx: Record<string, OwnerSummary> = {};
   result.forEach((r) => (idx[r.ownerId] = r));
 
-  // 新規
+  // 新規（active の加盟店のみ）
   for (const c of clients) {
+    if (c.status !== "active") continue;
     const sd = parseD(c.startDate);
     if (!sd) continue;
     const o = idx[c.salesOwnerId];
@@ -649,8 +659,9 @@ function calcOwnerSummary(
     }
   }
 
-  // 保持
+  // 保持（active の加盟店のみ）
   for (const c of clients) {
+    if (c.status !== "active") continue;
     const sd = parseD(c.startDate);
     if (!sd) continue;
     if (sd > monthEnd) continue;
@@ -1088,21 +1099,31 @@ useEffect(() => {
   let changed = false;
 
   const updatedClients = clients.map((c) => {
-    if (c.status !== "suspended") return c;
+    if (c.status === "suspended") {
+      const match = c.note?.match(/再開予定日：(\d{4}-\d{2}-\d{2})/);
+      if (!match) return c;
+      const resumeDate = parseD(match[1]);
+      if (!resumeDate) return c;
+      if (resumeDate <= today) {
+        changed = true;
+        return {
+          ...c,
+          status: "active" as Status,
+          note: c.note.replace(/再開予定日：\d{4}-\d{2}-\d{2}/, "").trim(),
+        };
+      }
+      return c;
+    }
 
-    const match = c.note?.match(/再開予定日：(\d{4}-\d{2}-\d{2})/);
-    if (!match) return c;
-
-    const resumeDate = parseD(match[1]);
-    if (!resumeDate) return c;
-
-    if (resumeDate <= today) {
-      changed = true;
-      return {
-        ...c,
-        status: "active" as Status,
-        note: c.note.replace(/再開予定日：\d{4}-\d{2}-\d{2}/, "").trim(),
-      };
+    if (c.status === "scheduled") {
+      const sd = parseD(c.startDate);
+      if (sd && sd <= today) {
+        changed = true;
+        return {
+          ...c,
+          status: "active" as Status,
+        };
+      }
     }
 
     return c;
@@ -2047,6 +2068,21 @@ function ChangeForm({
                   resumeDate && resumeDate > today
                     ? `再開予定日：${effectiveDate}`
                     : "",
+              }
+            : c
+        )
+      );
+    } else if (changeType === "activate") {
+      const activeDate = parseD(effectiveDate);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      setClients(
+        clients.map((c) =>
+          c.billingId === target.billingId
+            ? {
+                ...c,
+                status:
+                  activeDate && activeDate > today ? "scheduled" : "active",
               }
             : c
         )
@@ -3063,6 +3099,24 @@ function Dashboard({
   const totalSuspendLoss = sumImp(impact.suspendLoss);
   const totalSuspendGP = totalSuspendLoss * grossRate;
 
+  const [yearStr, monthStr] = targetMonth.split("-");
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const monthDays = daysInMonth(year, month);
+  const scheduledReferenceNet = clients.reduce((sum, c) => {
+    if (c.status !== "scheduled") return sum;
+    const sd = parseD(c.startDate);
+    if (!sd) return sum;
+    if (sd.getFullYear() !== year || sd.getMonth() + 1 !== month) return sum;
+    const ratio = (monthDays - sd.getDate() + 1) / monthDays;
+    return (
+      sum +
+      Object.entries(c.categoryBudgets || {})
+        .filter(([cat]) => targetCategories.includes(cat))
+        .reduce((s, [, v]) => s + (v as number), 0) * ratio
+    );
+  }, 0);
+
   const catRows = targetCategories.map((cat) => {
     const m = monthMetrics.find((x) => x.category === cat);
     const rev = m?.revenue ?? 0;
@@ -3191,6 +3245,8 @@ function Dashboard({
   );
   const overallAvgCUP = totalAvgVU > 0 ? totalAvgRev / totalAvgVU : null;
   const overallNetCUP = totalAvgVU > 0 ? totalNet / totalAvgVU : null;
+  const scheduledReferenceCUP =
+    totalAvgVU > 0 ? scheduledReferenceNet / totalAvgVU : null;
   const overallExpectedCUP =
     overallAvgCUP !== null && overallNetCUP !== null
       ? overallAvgCUP + overallNetCUP
@@ -3518,7 +3574,11 @@ function Dashboard({
           label="純増予算"
           value={yenSigned(totalNet)}
           tone={totalNet > 0 ? "up" : totalNet < 0 ? "down" : "flat"}
-          sub="新規 − 減少"
+          sub={
+            scheduledReferenceNet > 0
+              ? `参考 +${yenSigned(scheduledReferenceNet)}`
+              : "新規 − 減少"
+          }
           onClick={() => setStoreBreakdownOpen((v) => !v)}
         />
         <BigKPI
@@ -3534,7 +3594,15 @@ function Dashboard({
               : "flat"
           }
           sub={
-            overallExpectedCUP !== null ? `想定 ${yen(overallExpectedCUP)}` : ""
+            overallExpectedCUP !== null
+              ? `想定 ${yen(overallExpectedCUP)}${
+                  scheduledReferenceCUP !== null && scheduledReferenceCUP !== 0
+                    ? ` / 参考 ${yenSigned(scheduledReferenceCUP)}`
+                    : ""
+                }`
+              : scheduledReferenceCUP !== null
+              ? `参考 ${yenSigned(scheduledReferenceCUP)}`
+              : ""
           }
           onClick={() => setStoreBreakdownOpen((v) => !v)}
         />
