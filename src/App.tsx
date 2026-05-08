@@ -479,7 +479,6 @@ function calcMonthlyForecast(
   );
 
   const currentRevenue = monthMetrics.reduce((s, m) => s + m.revenue, 0);
-  const currentGP = monthMetrics.reduce((s, m) => s + m.grossProfit, 0);
   const currentVU = monthMetrics.reduce((s, m) => s + m.validUsers, 0);
 
  const metricsWithGross = monthMetrics.filter(
@@ -1037,19 +1036,6 @@ function calcMonthlyCUPByCategories(
   const totalRev = monthMetrics.reduce((s, m) => s + m.revenue, 0);
   const totalVU = monthMetrics.reduce((s, m) => s + m.validUsers, 0);
   return totalVU > 0 ? totalRev / totalVU : null;
-}
-
-function estimateClientAvgCUP(
-  targetMonth: string,
-  client: Client,
-  metrics: BusinessMetric[]
-): number {
-  const cats = Object.keys(client.categoryBudgets || {});
-  const cups = cats
-    .map((cat) => calcMonthlyOrAvgCUP(targetMonth, cat, metrics))
-    .filter((v): v is number => v !== null && isFinite(v));
-  if (cups.length === 0) return 10000;
-  return cups.reduce((s, v) => s + v, 0) / cups.length;
 }
 
 function calcMonthlyStockBudget(
