@@ -324,140 +324,347 @@ function downloadCSV(filename: string, rows: any[]) {
   URL.revokeObjectURL(url);
 }
  
-/* ---------- 月次インパクト計算 ---------- */
-interface MonthlyImpact {
+/* ---------- 月次状態スナップショット計算 ---------- */
+interface MonthlySnapshot {
+  totalBudget: number;
+  totalBudgetByCat: Record<string, number>;
+  activeClients: Client[];
   newAcq: Record<string, number>;
   withdraw: Record<string, number>;
   suspendLoss: Record<string, number>;
   otherDec: Record<string, number>;
-  net: Record<string, number>;
-  stockHeld: Record<string, number>;
 }
-function calcMonthlyImpact(
+function calcMonthlySnapshot(
   targetMonth: string,
   clients: Client[],
   changeLogs: ChangeLog[]
-): MonthlyImpact {
+): MonthlySnapshot {
   const [yStr, mStr] = targetMonth.split("-");
   const year = +yStr;
   const month = +mStr;
   const dim = daysInMonth(year, month);
-  const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month - 1, dim);
 
-  const newAcq = initCatRecord();
-  const withdraw = initCatRecord();
-  const suspendLoss = initCatRecord();
-  const otherDec = initCatRecord();
-  const stockHeld = initCatRecord();
+  const activeClients: Client[] = [];
 
-  // 新規獲得：startDateが当月でかつ active の加盟店を日割り
   for (const c of clients) {
     if (c.status !== "active") continue;
     const sd = parseD(c.startDate);
-    if (!sd) continue;
-    if (sd.getFullYear() === year && sd.getMonth() + 1 === month) {
-      const day = sd.getDate();
-      const ratio = (dim - day + 1) / dim;
-      for (const cat of CATEGORIES) {
-        newAcq[cat] += (c.categoryBudgets?.[cat] ?? 0) * ratio;
-      }
-    }
-  }
+    if (!sd || sd > monthEnd) continue;
 
-  // 保持予算（active の加盟店のみ。過去退会済みは除外）
-  for (const c of clients) {
-    if (c.status !== "active") continue;
-    const sd = parseD(c.startDate);
-    if (!sd) continue;
-    if (sd > monthEnd) continue;
-    let withdrawnBefore = false;
+    // 退会チェック
+    let withdrawn = false;
     for (const log of changeLogs) {
       if (log.billingId !== c.billingId) continue;
       if (log.changeType === "withdraw") {
         const eff = parseD(log.effectiveDate);
-        if (eff && eff < monthStart) {
-          withdrawnBefore = true;
+        if (eff && eff <= monthEnd) {
+          withdrawn = true;
           break;
         }
       }
     }
-    if (withdrawnBefore) continue;
+    if (withdrawn) continue;
+
+    // 停止チェック（当月中に停止していないか）
+    let suspended = false;
+    for (const log of changeLogs) {
+      if (log.billingId !== c.billingId) continue;
+      if (log.changeType === "suspend") {
+        const eff = parseD(log.effectiveDate);
+        if (eff && eff <= monthEnd) {
+          suspended = true;
+          break;
+        }
+      }
+    }
+    if (suspended) continue;
+
+    activeClients.push(c);
+  }
+
+  const totalBudgetByCat = initCatRecord();
+  let totalBudget = 0;
+  for (const c of activeClients) {
     for (const cat of CATEGORIES) {
-      stockHeld[cat] += c.categoryBudgets?.[cat] ?? 0;
+      const b = c.categoryBudgets?.[cat] ?? 0;
+      totalBudgetByCat[cat] += b;
+      totalBudget += b;
     }
   }
 
-  // 変更ログ
+  // ── インパクト計算 ──
+  const newAcq = initCatRecord();
+  const withdraw = initCatRecord();
+  const suspendLoss = initCatRecord();
+  const otherDec = initCatRecord();
+
+  // 新規
+  for (const c of clients) {
+    if (c.status !== "active") continue;
+    const sd = parseD(c.startDate);
+    if (!sd || sd.getFullYear() !== year || sd.getMonth() + 1 !== month) continue;
+    for (const cat of CATEGORIES) {
+      newAcq[cat] += c.categoryBudgets?.[cat] ?? 0;
+    }
+  }
+
+  // 退会・停止・減額
   for (const log of changeLogs) {
     const eff = parseD(log.effectiveDate);
-    if (!eff) continue;
-    const cl = clients.find((c) => c.billingId === log.billingId);
-    const budgets = cl?.categoryBudgets ?? {};
-    const effMonthKey = monthKeyOfDate(eff);
-    const isLastDay =
-      eff.getDate() === daysInMonth(eff.getFullYear(), eff.getMonth() + 1);
-    const next = new Date(eff.getFullYear(), eff.getMonth() + 1, 1);
-    const nextKey = monthKeyOfDate(next);
-
+    if (!eff || eff.getFullYear() !== year || eff.getMonth() + 1 !== month) continue;
+    const c = clients.find((x) => x.billingId === log.billingId);
+    if (!c) continue;
     if (log.changeType === "withdraw") {
-      // 退会：当月日割り or 翌月満額のみ。翌々月以降は計上しない
-      if (effMonthKey === targetMonth) {
-        if (!isLastDay) {
-          const remaining = dim - eff.getDate();
-          const ratio = remaining / dim;
-          for (const cat of CATEGORIES) {
-            withdraw[cat] += (budgets[cat] ?? 0) * ratio;
-          }
-        }
-      } else if (nextKey === targetMonth) {
-        for (const cat of CATEGORIES) {
-          withdraw[cat] += budgets[cat] ?? 0;
-        }
+      for (const cat of CATEGORIES) {
+        withdraw[cat] += c.categoryBudgets?.[cat] ?? 0;
       }
     } else if (log.changeType === "suspend") {
-      // 停止：退会と同様に、発生月は日割り、翌月は満額で集計
-      const save = calcSuspendDecreaseForMonth(log, targetMonth, budgets);
       for (const cat of CATEGORIES) {
-        suspendLoss[cat] += save[cat] ?? 0;
+        suspendLoss[cat] += c.categoryBudgets?.[cat] ?? 0;
       }
-    } else {
-      // 減額系：当月日割り or 翌月満額のみ。翌々月以降は計上しない
-      if (effMonthKey === targetMonth) {
-        const days = dim - eff.getDate();
-        const ratio = days / dim;
-        if (log.decreasedByCategory) {
-          for (const [cat, v] of Object.entries(log.decreasedByCategory)) {
-            otherDec[cat] += (v as number) * ratio;
-          }
-        } else {
-          const cats = log.affectedCategories?.length
-            ? log.affectedCategories
-            : [...CATEGORIES];
-          const per = log.decreasedBudget / Math.max(1, cats.length);
-          for (const cat of cats) otherDec[cat] += per * ratio;
-        }
-      } else if (nextKey === targetMonth) {
-        if (log.decreasedByCategory) {
-          for (const [cat, v] of Object.entries(log.decreasedByCategory)) {
-            otherDec[cat] += v as number;
-          }
-        } else {
-          const cats = log.affectedCategories?.length
-            ? log.affectedCategories
-            : [...CATEGORIES];
-          const per = log.decreasedBudget / Math.max(1, cats.length);
-          for (const cat of cats) otherDec[cat] += per;
-        }
+    } else if (log.changeType === "reduce") {
+      // 減額の場合、影響カテゴリとブランドで絞る
+      const affectedCats = log.affectedCategories?.length ? log.affectedCategories : c.categories;
+      for (const cat of affectedCats) {
+        otherDec[cat] += c.categoryBudgets?.[cat] ?? 0;
       }
     }
   }
 
-  const net = initCatRecord();
-  for (const cat of CATEGORIES) {
-    net[cat] = newAcq[cat] - withdraw[cat] - suspendLoss[cat] - otherDec[cat];
+  return { totalBudget, totalBudgetByCat, activeClients, newAcq, withdraw, suspendLoss, otherDec };
+}
+
+/* ---------- 今月着地予想 ---------- */
+interface MonthlyForecast {
+  currentRevenue: number;
+  baseForecastRevenue: number;
+  additionalImpact: number;
+  newStartImpact: number;
+  resumeImpact: number;
+  stopRevenue: number;
+  withdrawRevenue: number;
+  reduceRevenue: number;
+  revenue: number;
+  grossProfit: number;
+  cup: number | null;
+  grossRate: number;
+  expectedVU: number;
+}
+
+function calcMonthlyForecast(
+  targetMonth: string,
+  clients: Client[],
+  changeLogs: ChangeLog[],
+  metrics: BusinessMetric[],
+  targetCategories: string[]
+): MonthlyForecast {
+  const [yStr, mStr] = targetMonth.split("-");
+  const year = +yStr;
+  const month = +mStr;
+  const dim = daysInMonth(year, month);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const isCurrentMonth = targetMonth === todayMonth();
+  // 事業数字は「前日締め」で入力される想定。
+　// 例：5/8に見る数字は5/7時点実績なので、経過日数は7日。
+　const elapsedDays = isCurrentMonth
+  ? Math.min(Math.max(today.getDate() - 1, 1), dim)
+  : dim;
+
+
+  const monthMetrics = metrics.filter(
+    (m) => m.month === targetMonth && targetCategories.includes(m.category)
+  );
+
+  const currentRevenue = monthMetrics.reduce((s, m) => s + m.revenue, 0);
+  const currentGP = monthMetrics.reduce((s, m) => s + m.grossProfit, 0);
+  const currentVU = monthMetrics.reduce((s, m) => s + m.validUsers, 0);
+
+ const metricsWithGross = monthMetrics.filter(
+  (m) => m.revenue > 0 && m.grossProfit > 0
+);
+
+　const currentGrossRate =
+  metricsWithGross.length > 0
+    ? metricsWithGross.reduce((s, m) => s + m.grossProfit, 0) /
+      metricsWithGross.reduce((s, m) => s + m.revenue, 0)
+    : null;
+
+　const grossRate =
+  currentGrossRate ??
+  calcAvgGrossRate(targetMonth, targetCategories, metrics) ??
+  0.3;
+
+  const baseForecastRevenue =
+    currentRevenue > 0 ? (currentRevenue / elapsedDays) * dim : 0;
+
+  const expectedVU =
+    currentVU > 0
+      ? isCurrentMonth
+        ? (currentVU / elapsedDays) * dim
+        : currentVU
+      : targetCategories.reduce(
+          (s, cat) => s + (calcMonthlyOrAvgValidUsers(targetMonth, cat, metrics) || 0),
+          0
+        );
+
+  const sumBudget = (client: Client) =>
+    Object.entries(client.categoryBudgets || {})
+      .filter(([cat]) => targetCategories.includes(cat))
+      .reduce((s, [, v]) => s + Number(v || 0), 0);
+
+  const prorateFrom = (dateStr: string, amount: number) => {
+    const d = parseD(dateStr);
+    if (!d) return 0;
+    if (d.getFullYear() !== year || d.getMonth() + 1 !== month) return 0;
+    const activeDays = dim - d.getDate() + 1;
+    return amount * (activeDays / dim);
+  };
+
+  let newStartImpact = 0;
+  let resumeImpact = 0;
+  let stopRevenue = 0;
+  let withdrawRevenue = 0;
+  let reduceRevenue = 0;
+
+  for (const client of clients) {
+    const monthlyBudget = sumBudget(client);
+    if (monthlyBudget <= 0) continue;
+
+    const sd = parseD(client.startDate);
+    if (
+      sd &&
+      sd.getFullYear() === year &&
+      sd.getMonth() + 1 === month &&
+      (client.status === "scheduled" || client.status === "active")
+    ) {
+      newStartImpact += prorateFrom(client.startDate, monthlyBudget);
+    }
+
+    for (const log of changeLogs.filter((l) => l.billingId === client.billingId)) {
+      const eff = parseD(log.effectiveDate);
+      if (!eff) continue;
+      if (eff.getFullYear() !== year || eff.getMonth() + 1 !== month) continue;
+
+      if (log.changeType === "resume" || log.changeType === "activate") {
+        resumeImpact += prorateFrom(log.effectiveDate, monthlyBudget);
+      }
+
+      if (log.changeType === "suspend") {
+        stopRevenue += prorateFrom(log.effectiveDate, monthlyBudget);
+      }
+
+      if (log.changeType === "withdraw") {
+        withdrawRevenue += prorateFrom(log.effectiveDate, monthlyBudget);
+      }
+
+      if (
+        log.changeType === "reduce" ||
+        log.changeType === "down_sell" ||
+        log.changeType === "category_stop" ||
+        log.changeType === "area_reduce" ||
+        log.changeType === "brand_stop"
+      ) {
+        const decreased = Object.entries(log.decreasedByCategory || {})
+          .filter(([cat]) => targetCategories.includes(cat))
+          .reduce((s, [, v]) => s + Number(v || 0), 0);
+
+        reduceRevenue += prorateFrom(
+          log.effectiveDate,
+          decreased || log.decreasedBudget || 0
+        );
+      }
+    }
   }
-  return { newAcq, withdraw, suspendLoss, otherDec, net, stockHeld };
+
+  const additionalImpact =
+    newStartImpact + resumeImpact - stopRevenue - withdrawRevenue - reduceRevenue;
+
+  const forecastRevenue = baseForecastRevenue + additionalImpact;
+  const forecastGrossProfit = forecastRevenue * grossRate;
+  const forecastUnitPrice = expectedVU > 0 ? forecastRevenue / expectedVU : null;
+
+  return {
+    currentRevenue,
+    baseForecastRevenue,
+    additionalImpact,
+    newStartImpact,
+    resumeImpact,
+    stopRevenue,
+    withdrawRevenue,
+    reduceRevenue,
+    revenue: forecastRevenue,
+    grossProfit: forecastGrossProfit,
+    cup: forecastUnitPrice,
+    grossRate,
+    expectedVU,
+  };
+}
+
+
+/* ---------- 来月ストック予測 ---------- */
+interface MonthlyStockForecast {
+  thisMonthStock: number;
+  nextMonthStock: number;
+  stockDiff: number;
+  revenue: number;
+  grossProfit: number;
+  cup: number | null;
+}
+function calcNextMonthForecast(
+  targetMonth: string,
+  clients: Client[],
+  changeLogs: ChangeLog[],
+  metrics: BusinessMetric[],
+  targetCategories: string[]
+): MonthlyStockForecast {
+  const nextMonth = monthKeyOfDate(
+    new Date(
+      +targetMonth.split("-")[0],
+      +targetMonth.split("-")[1] - 1 + 1,
+      1
+    )
+  );
+
+  const thisMonthStock = calcMonthlyStockBudget(
+    targetMonth,
+    clients,
+    changeLogs,
+    targetCategories
+  ).stockBudget;
+  const nextMonthStock = calcMonthlyStockBudget(
+    nextMonth,
+    clients,
+    changeLogs,
+    targetCategories
+  ).stockBudget;
+
+  const landing = calcMonthlyForecast(
+    targetMonth,
+    clients,
+    changeLogs,
+    metrics,
+    targetCategories
+  );
+
+  const stockDiff = nextMonthStock - thisMonthStock;
+  const forecastRevenue = landing.revenue + stockDiff;
+  const avgVU = targetCategories.reduce(
+    (s, cat) => s + (calcMonthlyOrAvgValidUsers(nextMonth, cat, metrics) || 0),
+    0
+  );
+  const grossRate = calcAvgGrossRate(nextMonth, targetCategories, metrics) ?? 0.3;
+
+  return {
+    thisMonthStock,
+    nextMonthStock,
+    stockDiff,
+    revenue: forecastRevenue,
+    grossProfit: forecastRevenue * grossRate,
+    cup: avgVU > 0 ? forecastRevenue / avgVU : null,
+  };
 }
 
 interface ClientImpact {
@@ -756,13 +963,15 @@ function calcOwnerSummary(
 /* ---------- 直近3ヶ月平均：有効ユーザー数 / 顧客単価 ---------- */
 function calcAvgValidUsers(
   targetMonth: string,
-  category: string,
+  category: string | null,
   metrics: BusinessMetric[]
 ): number | null {
   const months = prev3Months(targetMonth);
   const vals: number[] = [];
   for (const k of months) {
-    const m = metrics.find((x) => x.month === k && x.category === category);
+    const m = metrics.find(
+      (x) => x.month === k && (category === null || x.category === category)
+    );
     if (m && m.validUsers > 0) vals.push(m.validUsers);
   }
   if (vals.length === 0) return null;
@@ -771,14 +980,16 @@ function calcAvgValidUsers(
 
 function calcAvgCUP(
   targetMonth: string,
-  category: string,
+  category: string | null,
   metrics: BusinessMetric[]
 ): number | null {
   const months = prev3Months(targetMonth);
   let sumRev = 0;
   let sumVU = 0;
   for (const k of months) {
-    const m = metrics.find((x) => x.month === k && x.category === category);
+    const m = metrics.find(
+      (x) => x.month === k && (category === null || x.category === category)
+    );
     if (m && m.validUsers > 0) {
       sumRev += m.revenue;
       sumVU += m.validUsers;
@@ -790,11 +1001,11 @@ function calcAvgCUP(
 
 function calcMonthlyValidUsers(
   targetMonth: string,
-  category: string,
+  category: string | null,
   metrics: BusinessMetric[]
 ): number | null {
   const monthMetrics = metrics.filter(
-    (m) => m.month === targetMonth && m.category === category
+    (m) => m.month === targetMonth && (category === null || m.category === category)
   );
   if (monthMetrics.length === 0) return null;
   return monthMetrics.reduce((s, m) => s + m.validUsers, 0);
@@ -828,9 +1039,98 @@ function calcMonthlyCUPByCategories(
   return totalVU > 0 ? totalRev / totalVU : null;
 }
 
+function estimateClientAvgCUP(
+  targetMonth: string,
+  client: Client,
+  metrics: BusinessMetric[]
+): number {
+  const cats = Object.keys(client.categoryBudgets || {});
+  const cups = cats
+    .map((cat) => calcMonthlyOrAvgCUP(targetMonth, cat, metrics))
+    .filter((v): v is number => v !== null && isFinite(v));
+  if (cups.length === 0) return 10000;
+  return cups.reduce((s, v) => s + v, 0) / cups.length;
+}
+
+function calcMonthlyStockBudget(
+  targetMonth: string,
+  clients: Client[],
+  changeLogs: ChangeLog[],
+  targetCategories: string[]
+): { stockBudget: number; stockBudgetByCat: Record<string, number> } {
+  const [yStr, mStr] = targetMonth.split("-");
+  const year = +yStr;
+  const month = +mStr;
+  const dim = daysInMonth(year, month);
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month - 1, dim);
+
+  const stockBudgetByCat = initCatRecord();
+  let stockBudget = 0;
+
+  for (const client of clients) {
+    const budgets = Object.entries(client.categoryBudgets || {})
+      .filter(([cat]) => targetCategories.includes(cat))
+      .reduce((s, [, v]) => s + (v as number), 0);
+    if (budgets <= 0) continue;
+
+    const sd = parseD(client.startDate);
+    if (!sd || sd > monthEnd) continue;
+
+    const budgetByDay = Array(dim + 1).fill(0);
+    const startDay = sd < monthStart ? 1 : sd.getDate();
+    if (client.status === "active" || client.status === "scheduled") {
+      for (let d = startDay; d <= dim; d++) {
+        budgetByDay[d] = budgets;
+      }
+    }
+
+    const logs = changeLogs
+      .filter((l) => l.billingId === client.billingId)
+      .map((l) => ({
+        ...l,
+        eff: parseD(l.effectiveDate),
+      }))
+      .filter((l) => l.eff && l.eff <= monthEnd)
+      .sort((a, b) => a.eff!.getTime() - b.eff!.getTime());
+
+    for (const log of logs) {
+      if (!log.eff) continue;
+      const effDay = log.eff < monthStart ? 1 : log.eff.getDate();
+      if (log.changeType === "withdraw" || log.changeType === "suspend") {
+        for (let d = effDay; d <= dim; d++) {
+          budgetByDay[d] = 0;
+        }
+      } else if (log.changeType === "resume" || log.changeType === "activate") {
+        for (let d = effDay; d <= dim; d++) {
+          budgetByDay[d] = budgets;
+        }
+      } else if (log.changeType === "reduce") {
+        const decreased = Object.entries(log.decreasedByCategory || {})
+          .filter(([cat]) => targetCategories.includes(cat))
+          .reduce((s, [, v]) => s + (v as number), 0);
+        const reducedBudget = decreased || log.decreasedBudget || 0;
+        for (let d = effDay; d <= dim; d++) {
+          budgetByDay[d] = Math.max(0, budgetByDay[d] - reducedBudget);
+        }
+      }
+    }
+
+    const monthlyTotal = budgetByDay.slice(1).reduce((s, v) => s + v, 0) / dim;
+    stockBudget += monthlyTotal;
+    for (const [cat, b] of Object.entries(client.categoryBudgets || {})) {
+      if (!targetCategories.includes(cat)) continue;
+      const ratio = budgets > 0 ? (b as number) / budgets : 0;
+      stockBudgetByCat[cat] += monthlyTotal * ratio;
+    }
+  }
+
+  return { stockBudget, stockBudgetByCat };
+}
+
 function calcMonthlyOrAvgValidUsers(
   targetMonth: string,
-  category: string,
+  category: string | null,
   metrics: BusinessMetric[]
 ): number | null {
   return (
@@ -841,7 +1141,7 @@ function calcMonthlyOrAvgValidUsers(
 
 function calcMonthlyOrAvgCUP(
   targetMonth: string,
-  category: string,
+  category: string | null,
   metrics: BusinessMetric[]
 ): number | null {
   return (
@@ -911,7 +1211,7 @@ function calcFutureCUPSummary(
   for (let i = 0; i < 12; i++) {
     const d = new Date(baseY, baseM - 1 + i, 1);
     const k = monthKeyOfDate(d);
-    const im = calcMonthlyImpact(k, clients, changeLogs);
+    const im = calcMonthlySnapshot(k, clients, changeLogs);
     const newAcq = im.newAcq[cat] || 0;
     const dec =
       (im.withdraw[cat] || 0) +
@@ -1998,8 +2298,8 @@ function ChangeForm({
       affectedBrands,
       affectedAreas,
       previousMonthlyBudget: target.monthlyBudget,
-      newMonthlyBudget: target.monthlyBudget - dec,
-      decreasedBudget: dec,
+      newMonthlyBudget: changeType === "activate" ? target.monthlyBudget : target.monthlyBudget - dec,
+      decreasedBudget: changeType === "activate" ? 0 : dec,
       decreasedByCategory: decByCat,
       reason,
       recoveryPossibility: recovery,
@@ -3063,10 +3363,6 @@ function Dashboard({
 }) {
   const [selectedCat, setSelectedCat] = useState<string | null>(null);
   const [storeBreakdownOpen, setStoreBreakdownOpen] = useState(false);
-  const impact = useMemo(
-    () => calcMonthlyImpact(targetMonth, clients, changeLogs),
-    [targetMonth, clients, changeLogs]
-  );
 
   // 商材フィルターを反映した数字
   const targetCategories =
@@ -3079,43 +3375,50 @@ function Dashboard({
 
   const totalRev = monthMetrics.reduce((s, m) => s + m.revenue, 0);
   const totalGP = monthMetrics.reduce((s, m) => s + m.grossProfit, 0);
-  const totalAd = monthMetrics.reduce((s, m) => s + m.adCost, 0);
-  const totalCV = monthMetrics.reduce((s, m) => s + m.cv, 0);
   const totalVU = monthMetrics.reduce((s, m) => s + m.validUsers, 0);
   const grossRate = totalRev > 0 ? totalGP / totalRev : 0;
-  const avgGrossRate =
-    totalRev > 0
-      ? grossRate
-      : calcAvgGrossRate(targetMonth, targetCategories, metrics) ?? 0;
-  const cpa = totalCV > 0 ? totalAd / totalCV : 0;
 
+  // 今月想定
+  const thisMonthForecast = useMemo(
+    () => calcMonthlyForecast(targetMonth, clients, changeLogs, metrics, targetCategories),
+    [targetMonth, clients, changeLogs, metrics, targetCategories]
+  );
+
+  // 来月想定
+  const nextMonthForecast = useMemo(
+    () => calcNextMonthForecast(targetMonth, clients, changeLogs, metrics, targetCategories),
+    [targetMonth, clients, changeLogs, metrics, targetCategories]
+  );
+
+  // 差分
+  const nextDiffRev = nextMonthForecast.revenue - thisMonthForecast.revenue;
+  const nextDiffGP = nextMonthForecast.grossProfit - thisMonthForecast.grossProfit;
+  const nextDiffCup = nextMonthForecast.cup !== null && thisMonthForecast.cup !== null ? nextMonthForecast.cup - thisMonthForecast.cup : null;
+
+  // 純増予算・顧客単価インパクト（サブ）
+  const impact = useMemo(
+    () => calcMonthlySnapshot(targetMonth, clients, changeLogs),
+    [targetMonth, clients, changeLogs]
+  );
   const sumImp = (obj: Record<string, number>) =>
     targetCategories.reduce((s, c) => s + (obj[c] || 0), 0);
-
   const totalNew = sumImp(impact.newAcq);
   const totalDecAll =
     sumImp(impact.withdraw) + sumImp(impact.suspendLoss) + sumImp(impact.otherDec);
   const totalNet = totalNew - totalDecAll;
-  const totalSuspendLoss = sumImp(impact.suspendLoss);
-  const totalSuspendGP = totalSuspendLoss * grossRate;
 
-  const [yearStr, monthStr] = targetMonth.split("-");
-  const year = Number(yearStr);
-  const month = Number(monthStr);
-  const monthDays = daysInMonth(year, month);
-  const scheduledReferenceNet = clients.reduce((sum, c) => {
-    if (c.status !== "scheduled") return sum;
-    const sd = parseD(c.startDate);
-    if (!sd) return sum;
-    if (sd.getFullYear() !== year || sd.getMonth() + 1 !== month) return sum;
-    const ratio = (monthDays - sd.getDate() + 1) / monthDays;
-    return (
-      sum +
-      Object.entries(c.categoryBudgets || {})
-        .filter(([cat]) => targetCategories.includes(cat))
-        .reduce((s, [, v]) => s + (v as number), 0) * ratio
-    );
-  }, 0);
+  const totalAvgVU = targetCategories.reduce(
+    (s, cat) => s + (calcMonthlyOrAvgValidUsers(targetMonth, cat, metrics) || 0),
+    0
+  );
+  const overallNetCUP = totalAvgVU > 0 ? totalNet / totalAvgVU : null;
+
+  const thisMonthStock = calcMonthlyStockBudget(
+    targetMonth,
+    clients,
+    changeLogs,
+    targetCategories
+  ).stockBudget;
 
   const catRows = targetCategories.map((cat) => {
     const m = monthMetrics.find((x) => x.category === cat);
@@ -3234,23 +3537,10 @@ function Dashboard({
   });
 
   // ── 全社平均（加重平均） ──
-  const totalAvgVU = catRows.reduce(
+  const totalAvgVU_dashboard = catRows.reduce(
     (s, r) => s + (r.avgVU !== null ? r.avgVU : 0),
     0
   );
-  const totalAvgRev = catRows.reduce(
-    (s, r) =>
-      s + (r.avgVU !== null && r.avgCUP !== null ? r.avgVU * r.avgCUP : 0),
-    0
-  );
-  const overallAvgCUP = totalAvgVU > 0 ? totalAvgRev / totalAvgVU : null;
-  const overallNetCUP = totalAvgVU > 0 ? totalNet / totalAvgVU : null;
-  const scheduledReferenceCUP =
-    totalAvgVU > 0 ? scheduledReferenceNet / totalAvgVU : null;
-  const overallExpectedCUP =
-    overallAvgCUP !== null && overallNetCUP !== null
-      ? overallAvgCUP + overallNetCUP
-      : null;
 
   const clientImpactRows = useMemo(() => {
     const rows = clients
@@ -3258,7 +3548,7 @@ function Dashboard({
         const impact = calcClientImpact(targetMonth, c, changeLogs);
         return {
           ...impact,
-          cupImpact: totalAvgVU > 0 ? impact.net / totalAvgVU : null,
+          cupImpact: totalAvgVU_dashboard > 0 ? impact.net / totalAvgVU_dashboard : null,
         };
       })
       .filter(
@@ -3272,7 +3562,7 @@ function Dashboard({
       .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
       .slice(0, 20);
     return rows;
-  }, [clients, changeLogs, targetMonth, totalAvgVU]);
+  }, [clients, changeLogs, targetMonth, totalAvgVU_dashboard]);
 
   // ── ダッシュボード顧客単価 ──
   const monthlyCUP = calcMonthlyCUPByCategories(targetMonth, targetCategories, metrics);
@@ -3283,42 +3573,13 @@ function Dashboard({
   );
   const prevVU = prevMonthMetrics.reduce((s, m) => s + m.validUsers, 0);
 
-  // ── 予測売上・粗利 ──
-  let forecastRevenue: number | null = null;
-  let forecastGP: number | null = null;
-  if (targetMonth === todayMonth()) {
-    // 当月: 経過時点のペースから月末まで予測
-    const today = new Date();
-    const [y, m] = targetMonth.split('-').map(Number);
-    const dim = daysInMonth(y, m);
-    const elapsedDays = today.getDate();
-    const dailyRevenue = totalRev / elapsedDays;
-    forecastRevenue = dailyRevenue * dim;
-    forecastGP =
-      forecastRevenue !== null
-        ? forecastRevenue * (totalRev > 0 ? grossRate : avgGrossRate)
-        : null;
-  } else {
-    // 翌月以降: 直近3ヶ月平均VU × 予測CUP
-    forecastRevenue =
-      totalAvgVU > 0 && overallExpectedCUP !== null
-        ? totalAvgVU * overallExpectedCUP
-        : null;
-    forecastGP =
-      forecastRevenue !== null
-        ? forecastRevenue * (totalRev > 0 ? grossRate : avgGrossRate)
-        : null;
-  }
   let displayCUP = monthlyCUP;
-  let subLabel = prevMonthlyCUP !== null ? `前月 ${yen(prevMonthlyCUP)}` : "前月データなし";
   if (displayCUP === null) {
     // 予測
     if (prevMonthlyCUP !== null && prevVU > 0) {
       displayCUP = prevMonthlyCUP + totalNet / prevVU;
-      subLabel = `予測（前月 ${yen(prevMonthlyCUP)}）`;
     } else {
       displayCUP = null;
-      subLabel = "予測不可";
     }
   }
   // 当月の日割り
@@ -3390,7 +3651,9 @@ function Dashboard({
       })
       .filter((x): x is NonNullable<typeof x> => !!x);
   }, [targetMonth, clients, changeLogs, owners, grossRate]);
- 
+
+  const totalSuspendGP = suspendList.reduce((s, x) => s + x.lossGP, 0);
+
   const ownerSummary = useMemo(
     () => calcOwnerSummary(targetMonth, clients, changeLogs, owners, metrics),
     [targetMonth, clients, changeLogs, owners, metrics]
@@ -3432,7 +3695,7 @@ function Dashboard({
         if (vu !== null && cup !== null) {
           sumVU += vu;
           sumBase += vu * cup;
-          const im = calcMonthlyImpact(k, clients, changeLogs);
+          const im = calcMonthlySnapshot(k, clients, changeLogs);
           const net =
             (im.newAcq[cat] || 0) -
             (im.withdraw[cat] || 0) -
@@ -3539,46 +3802,90 @@ function Dashboard({
       </div>
  
       {/* ③ KPIカード（最上部） */}
+      <div className="space-y-4">
+        <div>
+          <div className="text-sm font-semibold text-slate-700">今月着地予想</div>
+          <div className="text-xs text-slate-500">現在実績 + 月末までの追加日割り - 月末までの停止/減額影響</div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <BigKPI
+            label="今月着地予想売上"
+            value={yen(Math.round(thisMonthForecast.revenue))}
+            sub={`粗利率 ${pct(thisMonthForecast.grossRate)}`}
+          />
+          <BigKPI
+            label="今月着地予想粗利"
+            value={yen(Math.round(thisMonthForecast.grossProfit))}
+            sub={`売上 ${yen(Math.round(thisMonthForecast.revenue))}`}
+          />
+          <BigKPI
+            label="今月着地予想顧客単価"
+            value={thisMonthForecast.cup !== null ? yen(Math.round(thisMonthForecast.cup)) : "—"}
+            sub={`有効ユーザー ${Math.round(thisMonthForecast.expectedVU)}`}
+          />
+        </div>
+        <div className="text-xs text-slate-500 space-y-1">
+　　　　　<div>ランレート予測売上: {yen(Math.round(thisMonthForecast.baseForecastRevenue))}</div>
+　　　　　<div>加盟店増減インパクト: {yenSigned(thisMonthForecast.additionalImpact)}</div>
+　　　　　<div>新規開始追加: {yen(Math.round(thisMonthForecast.newStartImpact))}</div>
+　　　　　<div>再開追加: {yen(Math.round(thisMonthForecast.resumeImpact))}</div>
+　　　　　<div>停止影響: −{yen(Math.round(thisMonthForecast.stopRevenue))}</div>
+　　　　　<div>退会影響: −{yen(Math.round(thisMonthForecast.withdrawRevenue))}</div>
+　　　　　<div>減額影響: −{yen(Math.round(thisMonthForecast.reduceRevenue))}</div>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div>
+          <div className="text-sm font-semibold text-slate-700">来月予測（ストック）</div>
+          <div className="text-xs text-slate-500">対象月時点の有効加盟店ストックを基準に算出</div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <BigKPI
+            label="今月ストック"
+            value={yen(Math.round(thisMonthStock))}
+            sub="今月時点のストック"
+          />
+          <BigKPI
+            label="来月ストック"
+            value={yen(Math.round(nextMonthForecast.nextMonthStock))}
+            sub="翌月時点のストック"
+          />
+          <BigKPI
+            label="ストック差分"
+            value={yenSigned(nextMonthForecast.stockDiff)}
+            tone={
+              nextMonthForecast.stockDiff > 0
+                ? "up"
+                : nextMonthForecast.stockDiff < 0
+                ? "down"
+                : "flat"
+            }
+            sub="翌月 − 当月"
+          />
+          <BigKPI
+            label="来月予測売上"
+            value={yen(Math.round(nextMonthForecast.revenue))}
+            sub={`前月差分 ${yenSigned(nextDiffRev)}`}
+          />
+          <BigKPI
+            label="来月予測粗利"
+            value={yen(Math.round(nextMonthForecast.grossProfit))}
+            sub={`前月差分 ${yenSigned(nextDiffGP)}`}
+          />
+          <BigKPI
+            label="来月予測顧客単価"
+            value={nextMonthForecast.cup !== null ? yen(Math.round(nextMonthForecast.cup)) : "—"}
+            sub={nextDiffCup !== null ? `前月差分 ${yenSigned(nextDiffCup)}` : ""}
+          />
+        </div>
+      </div>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <BigKPI label="売上" value={yen(totalRev)} />
-        <BigKPI label="粗利" value={yen(totalGP)} sub={pct(grossRate)} />
-        <BigKPI
-          label="予測売上"
-          value={forecastRevenue !== null ? yen(Math.round(forecastRevenue)) : "—"}
-          sub={
-            targetMonth === todayMonth()
-              ? "経過時点ペース×月末まで"
-              : "直近3ヶ月平均VU×予測CUP"
-          }
-        />
-        <BigKPI
-          label="予測粗利"
-          value={forecastGP !== null ? yen(Math.round(forecastGP)) : "—"}
-          sub={
-            targetMonth === todayMonth()
-              ? `粗利率 ${pct(totalRev > 0 ? grossRate : avgGrossRate)}（経過ペース）`
-              : avgGrossRate > 0 ? `粗利率 ${pct(avgGrossRate)}` : "推定"
-          }
-        />
-        <BigKPI
-          label="CPA"
-          value={cpa > 0 ? yen(cpa) : "—"}
-          sub={`CV ${totalCV.toLocaleString()}`}
-        />
-        <BigKPI
-          label="顧客単価"
-          value={displayCUP !== null ? yen(displayCUP) : "—"}
-          sub={subLabel}
-        />
         <BigKPI
           label="純増予算"
           value={yenSigned(totalNet)}
           tone={totalNet > 0 ? "up" : totalNet < 0 ? "down" : "flat"}
-          sub={
-            scheduledReferenceNet > 0
-              ? `参考 +${yenSigned(scheduledReferenceNet)}`
-              : "新規 − 減少"
-          }
+          sub="新規 − 減少"
           onClick={() => setStoreBreakdownOpen((v) => !v)}
         />
         <BigKPI
@@ -3593,17 +3900,7 @@ function Dashboard({
               ? "down"
               : "flat"
           }
-          sub={
-            overallExpectedCUP !== null
-              ? `想定 ${yen(overallExpectedCUP)}${
-                  scheduledReferenceCUP !== null && scheduledReferenceCUP !== 0
-                    ? ` / 参考 ${yenSigned(scheduledReferenceCUP)}`
-                    : ""
-                }`
-              : scheduledReferenceCUP !== null
-              ? `参考 ${yenSigned(scheduledReferenceCUP)}`
-              : ""
-          }
+          sub="純増による顧客単価変動"
           onClick={() => setStoreBreakdownOpen((v) => !v)}
         />
       </div>
