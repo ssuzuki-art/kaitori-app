@@ -617,7 +617,8 @@ function calcNextMonthForecast(
   clients: Client[],
   changeLogs: ChangeLog[],
   metrics: BusinessMetric[],
-  targetCategories: string[]
+  targetCategories: string[],
+  currentForecast: MonthlyForecast
 ): MonthlyStockForecast {
   const nextMonth = monthKeyOfDate(
     new Date(
@@ -650,10 +651,7 @@ function calcNextMonthForecast(
 
   const stockDiff = nextMonthStock - thisMonthStock;
   const forecastRevenue = landing.revenue + stockDiff;
-  const avgVU = targetCategories.reduce(
-    (s, cat) => s + (calcMonthlyOrAvgValidUsers(nextMonth, cat, metrics) || 0),
-    0
-  );
+  const finalVU = currentForecast.expectedVU;
   const grossRate = calcAvgGrossRate(nextMonth, targetCategories, metrics) ?? 0.3;
 
   return {
@@ -662,7 +660,7 @@ function calcNextMonthForecast(
     stockDiff,
     revenue: forecastRevenue,
     grossProfit: forecastRevenue * grossRate,
-    cup: avgVU > 0 ? forecastRevenue / avgVU : null,
+    cup: finalVU > 0 ? forecastRevenue / finalVU : null,
   };
 }
 
@@ -3372,9 +3370,29 @@ function Dashboard({
 
   // 来月想定
   const nextMonthForecast = useMemo(
-    () => calcNextMonthForecast(targetMonth, clients, changeLogs, metrics, targetCategories),
-    [targetMonth, clients, changeLogs, metrics, targetCategories]
+    () => calcNextMonthForecast(
+      targetMonth,
+      clients,
+      changeLogs,
+      metrics,
+      targetCategories,
+      thisMonthForecast
+    ),
+    [targetMonth, clients, changeLogs, metrics, targetCategories, thisMonthForecast]
   );
+
+  const nextMonth = monthKeyOfDate(
+    new Date(
+      +targetMonth.split("-")[0],
+      +targetMonth.split("-")[1] - 1 + 1,
+      1
+    )
+  );
+  const nextMonthAvgVU = targetCategories.reduce(
+    (s, cat) => s + (calcMonthlyOrAvgValidUsers(nextMonth, cat, metrics) || 0),
+    0
+  );
+  const nextMonthGrossRate = calcAvgGrossRate(nextMonth, targetCategories, metrics) ?? 0.3;
 
   // 差分
   const nextDiffRev = nextMonthForecast.revenue - thisMonthForecast.revenue;
@@ -3798,26 +3816,40 @@ function Dashboard({
             label="今月着地予想売上"
             value={yen(Math.round(thisMonthForecast.revenue))}
             sub={`粗利率 ${pct(thisMonthForecast.grossRate)}`}
+            logic={
+              <>
+                <div>ランレート予測売上: {yen(Math.round(thisMonthForecast.baseForecastRevenue))}</div>
+                <div>開始/再開追加: {yen(Math.round(thisMonthForecast.newStartImpact + thisMonthForecast.resumeImpact))}</div>
+                <div>停止/退会影響: −{yen(Math.round(thisMonthForecast.stopRevenue + thisMonthForecast.withdrawRevenue))}</div>
+                <div>減額影響: −{yen(Math.round(thisMonthForecast.reduceRevenue))}</div>
+                <div className="font-semibold">合計着地予想売上: {yen(Math.round(thisMonthForecast.revenue))}</div>
+              </>
+            }
           />
           <BigKPI
             label="今月着地予想粗利"
             value={yen(Math.round(thisMonthForecast.grossProfit))}
             sub={`売上 ${yen(Math.round(thisMonthForecast.revenue))}`}
+            logic={
+              <>
+                <div>着地予想売上: {yen(Math.round(thisMonthForecast.revenue))}</div>
+                <div>粗利率: {pct(thisMonthForecast.grossRate)}</div>
+                <div className="font-semibold">着地予想粗利: {yen(Math.round(thisMonthForecast.grossProfit))}</div>
+              </>
+            }
           />
           <BigKPI
             label="今月着地予想顧客単価"
             value={thisMonthForecast.cup !== null ? yen(Math.round(thisMonthForecast.cup)) : "—"}
             sub={`有効ユーザー ${Math.round(thisMonthForecast.expectedVU)}`}
+            logic={
+              <>
+                <div>着地予想売上: {yen(Math.round(thisMonthForecast.revenue))}</div>
+                <div>想定有効ユーザー: {Math.round(thisMonthForecast.expectedVU)}</div>
+                <div className="font-semibold">着地予想顧客単価: {thisMonthForecast.cup !== null ? yen(Math.round(thisMonthForecast.cup)) : "—"}</div>
+              </>
+            }
           />
-        </div>
-        <div className="text-xs text-slate-500 space-y-1">
-　　　　　<div>ランレート予測売上: {yen(Math.round(thisMonthForecast.baseForecastRevenue))}</div>
-　　　　　<div>加盟店増減インパクト: {yenSigned(thisMonthForecast.additionalImpact)}</div>
-　　　　　<div>新規開始追加: {yen(Math.round(thisMonthForecast.newStartImpact))}</div>
-　　　　　<div>再開追加: {yen(Math.round(thisMonthForecast.resumeImpact))}</div>
-　　　　　<div>停止影響: −{yen(Math.round(thisMonthForecast.stopRevenue))}</div>
-　　　　　<div>退会影響: −{yen(Math.round(thisMonthForecast.withdrawRevenue))}</div>
-　　　　　<div>減額影響: −{yen(Math.round(thisMonthForecast.reduceRevenue))}</div>
         </div>
       </div>
 
@@ -3831,11 +3863,25 @@ function Dashboard({
             label="今月ストック"
             value={yen(Math.round(thisMonthStock))}
             sub="今月時点のストック"
+            logic={
+              <>
+                <div>対象月: {targetMonth}</div>
+                <div>有効加盟店数: {clients.filter(c => c.status === 'active').length}件</div>
+                <div>ストック予算合計: {yen(Math.round(thisMonthStock))}</div>
+              </>
+            }
           />
           <BigKPI
             label="来月ストック"
             value={yen(Math.round(nextMonthForecast.nextMonthStock))}
             sub="翌月時点のストック"
+            logic={
+              <>
+                <div>対象月: {nextMonth}</div>
+                <div>有効加盟店数: {clients.filter(c => c.status === 'active').length}件（変更適用後）</div>
+                <div>ストック予算合計: {yen(Math.round(nextMonthForecast.nextMonthStock))}</div>
+              </>
+            }
           />
           <BigKPI
             label="ストック差分"
@@ -3848,21 +3894,49 @@ function Dashboard({
                 : "flat"
             }
             sub="翌月 − 当月"
+            logic={
+              <>
+                <div>来月ストック: {yen(Math.round(nextMonthForecast.nextMonthStock))}</div>
+                <div>今月ストック: {yen(Math.round(thisMonthStock))}</div>
+                <div className="font-semibold">差分: {yenSigned(nextMonthForecast.stockDiff)}</div>
+              </>
+            }
           />
           <BigKPI
             label="来月予測売上"
             value={yen(Math.round(nextMonthForecast.revenue))}
             sub={`前月差分 ${yenSigned(nextDiffRev)}`}
+            logic={
+              <>
+                <div>今月着地予想売上: {yen(Math.round(thisMonthForecast.revenue))}</div>
+                <div>ストック差分: {yenSigned(nextMonthForecast.stockDiff)}</div>
+                <div className="font-semibold">来月予測売上: {yen(Math.round(nextMonthForecast.revenue))}</div>
+              </>
+            }
           />
           <BigKPI
             label="来月予測粗利"
             value={yen(Math.round(nextMonthForecast.grossProfit))}
             sub={`前月差分 ${yenSigned(nextDiffGP)}`}
+            logic={
+              <>
+                <div>来月予測売上: {yen(Math.round(nextMonthForecast.revenue))}</div>
+                <div>想定粗利率: {pct(nextMonthGrossRate)}</div>
+                <div className="font-semibold">来月予測粗利: {yen(Math.round(nextMonthForecast.grossProfit))}</div>
+              </>
+            }
           />
           <BigKPI
             label="来月予測顧客単価"
             value={nextMonthForecast.cup !== null ? yen(Math.round(nextMonthForecast.cup)) : "—"}
             sub={nextDiffCup !== null ? `前月差分 ${yenSigned(nextDiffCup)}` : ""}
+            logic={
+              <>
+                <div>来月予測売上: {yen(Math.round(nextMonthForecast.revenue))}</div>
+                <div>想定有効ユーザー: {Math.round(nextMonthAvgVU)}</div>
+                <div className="font-semibold">来月予測顧客単価: {nextMonthForecast.cup !== null ? yen(Math.round(nextMonthForecast.cup)) : "—"}</div>
+              </>
+            }
           />
         </div>
       </div>
@@ -3873,6 +3947,15 @@ function Dashboard({
           tone={totalNet > 0 ? "up" : totalNet < 0 ? "down" : "flat"}
           sub="新規 − 減少"
           onClick={() => setStoreBreakdownOpen((v) => !v)}
+          logic={
+            <>
+              <div>新規獲得予算: {yen(Math.round(totalNew))}</div>
+              <div>退会予算: −{yen(Math.round(sumImp(impact.withdraw)))}</div>
+              <div>停止損失予算: −{yen(Math.round(sumImp(impact.suspendLoss)))}</div>
+              <div>減額予算: −{yen(Math.round(sumImp(impact.otherDec)))}</div>
+              <div className="font-semibold">純増予算: {yenSigned(totalNet)}</div>
+            </>
+          }
         />
         <BigKPI
           label="顧客単価インパクト"
@@ -3888,6 +3971,13 @@ function Dashboard({
           }
           sub="純増による顧客単価変動"
           onClick={() => setStoreBreakdownOpen((v) => !v)}
+          logic={
+            <>
+              <div>純増予算: {yenSigned(totalNet)}</div>
+              <div>平均有効ユーザー数: {Math.round(totalAvgVU)}</div>
+              <div className="font-semibold">顧客単価インパクト: {overallNetCUP !== null ? yenSigned(overallNetCUP) : "—"}</div>
+            </>
+          }
         />
       </div>
 
@@ -4403,12 +4493,14 @@ function BigKPI({
   sub,
   tone,
   onClick,
+  logic,
 }: {
   label: string;
   value: string;
   sub?: string;
   tone?: "up" | "down" | "flat";
   onClick?: () => void;
+  logic?: React.ReactNode;
 }) {
   const color =
     tone === "up"
@@ -4418,17 +4510,34 @@ function BigKPI({
       : tone === "flat"
       ? "text-slate-500"
       : "text-slate-900";
+  const [logicOpen, setLogicOpen] = useState(false);
   return (
-    <div
-      className={`bg-white rounded-lg border border-slate-200 p-4 transition ${
-        onClick ? "cursor-pointer hover:shadow-sm" : ""
-      }`}
-      onClick={onClick}
-    >
-      <div className="text-[11px] text-slate-500">{label}</div>
-      <div className={`text-xl font-bold mt-1 ${color}`}>{value}</div>
-      {sub && (
-        <div className="text-[10px] text-slate-400 mt-1 truncate">{sub}</div>
+    <div className="space-y-2">
+      <div
+        className={`bg-white rounded-lg border border-slate-200 p-4 transition ${
+          onClick ? "cursor-pointer hover:shadow-sm" : ""
+        }`}
+        onClick={onClick}
+      >
+        <div className="text-[11px] text-slate-500">{label}</div>
+        <div className={`text-xl font-bold mt-1 ${color}`}>{value}</div>
+        {sub && (
+          <div className="text-[10px] text-slate-400 mt-1 truncate">{sub}</div>
+        )}
+      </div>
+      {logic && (
+        <details
+          className="bg-slate-50 rounded-lg border border-slate-200"
+          open={logicOpen}
+          onToggle={(e) => setLogicOpen(e.currentTarget.open)}
+        >
+          <summary className="cursor-pointer select-none p-2 text-xs text-slate-600 hover:bg-slate-100 rounded-t-lg">
+            計算ロジック ▾
+          </summary>
+          <div className="p-3 text-xs text-slate-700 space-y-1">
+            {logic}
+          </div>
+        </details>
       )}
     </div>
   );
