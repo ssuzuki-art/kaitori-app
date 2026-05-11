@@ -4155,11 +4155,6 @@ function Dashboard({
     return arr;
   }, [catRows]);
 
-  const formatProgress = (actual: number, target: number | null) =>
-    target && target > 0
-      ? `${Math.round((actual / target) * 100)}%`
-      : "";
-
   const weeklyForecastsForMonth = useMemo(
     () =>
       weeklyForecasts
@@ -4167,6 +4162,11 @@ function Dashboard({
         .sort((a, b) => a.weekStart.localeCompare(b.weekStart)),
     [weeklyForecasts, targetMonth]
   );
+
+  const formatProgress = (actual: number, target: number | null) =>
+    target && target > 0
+      ? `${Math.round((actual / target) * 100)}%`
+      : "";
 
   const today = new Date();
   const isMonday = today.getDay() === 1;
