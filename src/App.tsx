@@ -205,7 +205,85 @@ const parseD = (s?: string) => (s ? new Date(s + "T00:00:00") : null);
 const monthKeyOfDate = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 const uid = () => Math.random().toString(36).slice(2, 10);
- 
+
+interface WeeklyForecastSnapshot {
+  revenue: number;
+  grossProfit: number;
+  validUsers: number;
+  cup: number | null;
+}
+interface WeeklyForecastEntry {
+  id: string;
+  month: string;
+  weekLabel: string;
+  weekStart: string;
+  weekEnd: string;
+  updatedAt: string;
+  overall: WeeklyForecastSnapshot;
+  byCategory: Record<string, WeeklyForecastSnapshot>;
+  impact: {
+    newAcq: number;
+    withdraw: number;
+    suspendLoss: number;
+    otherDec: number;
+    net: number;
+  };
+}
+
+const dateKey = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+
+function getMonthWeeks(targetMonth: string) {
+  const [yStr, mStr] = targetMonth.split("-");
+  const year = +yStr;
+  const month = +mStr;
+  const dim = daysInMonth(year, month);
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month - 1, dim);
+  const weeks: { weekLabel: string; start: Date; end: Date }[] = [];
+
+  const firstWeekEnd = new Date(monthStart);
+  const offset = (7 - monthStart.getDay()) % 7;
+  firstWeekEnd.setDate(monthStart.getDate() + offset);
+  if (firstWeekEnd > monthEnd) firstWeekEnd.setTime(monthEnd.getTime());
+  weeks.push({ weekLabel: "第1週", start: monthStart, end: firstWeekEnd });
+
+  let nextStart = new Date(firstWeekEnd);
+  nextStart.setDate(firstWeekEnd.getDate() + 1);
+  let weekIndex = 2;
+  while (nextStart <= monthEnd) {
+    const nextEnd = new Date(nextStart);
+    nextEnd.setDate(nextStart.getDate() + 6);
+    if (nextEnd > monthEnd) nextEnd.setTime(monthEnd.getTime());
+    weeks.push({
+      weekLabel: `第${weekIndex}週`,
+      start: new Date(nextStart),
+      end: nextEnd,
+    });
+    weekIndex++;
+    nextStart = new Date(nextEnd);
+    nextStart.setDate(nextEnd.getDate() + 1);
+  }
+
+  return weeks;
+}
+
+function getWeekForDate(date: Date, targetMonth: string) {
+  const weeks = getMonthWeeks(targetMonth);
+  const t = new Date(date);
+  t.setHours(0, 0, 0, 0);
+  const found = weeks.find((w) => {
+    const start = new Date(w.start);
+    const end = new Date(w.end);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
+    return start <= t && t <= end;
+  });
+  return found ?? weeks[weeks.length - 1];
+}
+
 const initCatRecord = () =>
   CATEGORIES.reduce((acc, c) => {
     acc[c] = 0;
@@ -1362,6 +1440,7 @@ export default function App() {
   const [metrics, setMetrics] = useState<BusinessMetric[]>([]);
   const [owners, setOwners] = useState<SalesOwner[]>([]);
   const [brands, setBrands] = useState<BrandMaster[]>([]);
+  const [weeklyForecasts, setWeeklyForecasts] = useState<WeeklyForecastEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
   const load = async () => {
@@ -1383,6 +1462,7 @@ export default function App() {
     setMetrics(d.metrics || []);
     setOwners(d.owners || []);
     setBrands(d.brands || []);
+    setWeeklyForecasts(d.weeklyForecasts || []);
 
     setLoaded(true);
   };
@@ -1400,17 +1480,16 @@ useEffect(() => {
         metrics,
         owners,
         brands,
+        weeklyForecasts,
       },
     });
   };
 
   save();
-}, [loaded, clients, changeLogs, metrics, owners, brands]);
+}, [loaded, clients, changeLogs, metrics, owners, brands, weeklyForecasts]);
 
-  useEffect(() => {
+useEffect(() => {
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
   let changed = false;
 
   const updatedClients = clients.map((c) => {
@@ -1596,6 +1675,8 @@ useEffect(() => {
               owners={owners}
               filterCats={filterCats}
               filterOwners={filterOwners}
+              weeklyForecasts={weeklyForecasts}
+              setWeeklyForecasts={setWeeklyForecasts}
             />
           )}
           {view === "clients" && (
@@ -3587,6 +3668,8 @@ function Dashboard({
   owners,
   filterCats,
   filterOwners,
+  weeklyForecasts,
+  setWeeklyForecasts,
 }: {
   targetMonth: string;
   clients: Client[];
@@ -3595,6 +3678,8 @@ function Dashboard({
   owners: SalesOwner[];
   filterCats: string[];
   filterOwners: string[];
+  weeklyForecasts: WeeklyForecastEntry[];
+  setWeeklyForecasts: React.Dispatch<React.SetStateAction<WeeklyForecastEntry[]>>;
 }) {
   const [selectedCat, setSelectedCat] = useState<string | null>(null);
   const [storeBreakdownOpen, setStoreBreakdownOpen] = useState(false);
@@ -4075,6 +4160,77 @@ function Dashboard({
       ? `${Math.round((actual / target) * 100)}%`
       : "";
 
+  const weeklyForecastsForMonth = useMemo(
+    () =>
+      weeklyForecasts
+        .filter((entry) => entry.month === targetMonth)
+        .sort((a, b) => a.weekStart.localeCompare(b.weekStart)),
+    [weeklyForecasts, targetMonth]
+  );
+
+  const today = new Date();
+  const isMonday = today.getDay() === 1;
+  const weekRange = getWeekForDate(today, targetMonth);
+
+  const handleWeeklyUpdate = () => {
+    const overall: WeeklyForecastSnapshot = {
+      revenue: Math.round(thisMonthForecast.revenue),
+      grossProfit: Math.round(thisMonthForecast.grossProfit),
+      validUsers: Math.round(thisMonthForecast.expectedVU),
+      cup: thisMonthForecast.cup,
+    };
+
+    const byCategory = targetCategories.reduce(
+      (acc, cat) => {
+        const f = thisMonthForecastByCat[cat];
+        acc[cat] = {
+          revenue: Math.round(f.revenue),
+          grossProfit: Math.round(f.grossProfit),
+          validUsers: Math.round(f.expectedVU),
+          cup: f.cup,
+        };
+        return acc;
+      },
+      {} as Record<string, WeeklyForecastSnapshot>
+    );
+
+    const impactTotals = {
+      newAcq: sumImp(impact.newAcq),
+      withdraw: sumImp(impact.withdraw),
+      suspendLoss: sumImp(impact.suspendLoss),
+      otherDec: sumImp(impact.otherDec),
+    };
+
+    const entry: WeeklyForecastEntry = {
+      id: uid(),
+      month: targetMonth,
+      weekLabel: weekRange.weekLabel,
+      weekStart: dateKey(weekRange.start),
+      weekEnd: dateKey(weekRange.end),
+      updatedAt: new Date().toISOString(),
+      overall,
+      byCategory,
+      impact: {
+        ...impactTotals,
+        net:
+          impactTotals.newAcq -
+          impactTotals.withdraw -
+          impactTotals.suspendLoss -
+          impactTotals.otherDec,
+      },
+    };
+
+    setWeeklyForecasts((prev) => {
+      const filtered = prev.filter(
+        (item) =>
+          !(item.month === targetMonth && item.weekLabel === weekRange.weekLabel)
+      );
+      return [...filtered, entry].sort((a, b) =>
+        a.weekStart.localeCompare(b.weekStart)
+      );
+    });
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between flex-wrap gap-2">
@@ -4095,7 +4251,6 @@ function Dashboard({
         </div>
       </div>
  
-      {/* ③ KPIカード（最上部） */}
       <div className="space-y-4">
         <div>
           <div className="text-sm font-semibold text-slate-700">今月着地予想</div>
@@ -4268,6 +4423,180 @@ function Dashboard({
             }
           />
         </div>
+      </div>
+
+      {/* ② 週次着地予想 */}
+      <div className="space-y-4">
+        <div>
+          <div className="text-sm font-semibold text-slate-700">週次着地予想</div>
+          <div className="text-xs text-slate-500">
+            毎週月曜日に「週予測を更新」を押すと、その週の進捗と着地予想が履歴として残ります。
+          </div>
+        </div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <button
+            className={`inline-flex items-center justify-center rounded px-4 py-2 text-sm font-semibold text-white transition ${
+              isMonday
+                ? "bg-slate-900 hover:bg-slate-700"
+                : "bg-slate-400 cursor-not-allowed"
+            }`}
+            onClick={handleWeeklyUpdate}
+            disabled={!isMonday}
+          >
+            週予測を更新
+          </button>
+          <div className="text-xs text-slate-500">
+            {isMonday
+              ? "本日は週予測更新日です。"
+              : "毎週月曜日に週予測を更新してください。"}
+          </div>
+        </div>
+
+        {weeklyForecastsForMonth.length === 0 ? (
+          <div className="rounded border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            週次予測の履歴がありません。週予測を更新すると「第1週」から順に記録されます。
+          </div>
+        ) : (
+          weeklyForecastsForMonth.map((entry, index) => {
+            const prevEntry = index > 0 ? weeklyForecastsForMonth[index - 1] : null;
+            const revDiff = prevEntry
+              ? entry.overall.revenue - prevEntry.overall.revenue
+              : 0;
+            const gpDiff = prevEntry
+              ? entry.overall.grossProfit - prevEntry.overall.grossProfit
+              : 0;
+            const userDiff = prevEntry
+              ? entry.overall.validUsers - prevEntry.overall.validUsers
+              : 0;
+            const diffClass = (val: number) =>
+              val > 0
+                ? "text-emerald-600"
+                : val < 0
+                ? "text-rose-600"
+                : "text-slate-600";
+
+            return (
+              <details
+                key={entry.id}
+                className={css.card}
+                open={index === weeklyForecastsForMonth.length - 1}
+              >
+                <summary
+                  className={`${css.cardHeader} cursor-pointer select-none flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between`}
+                >
+                  <div>
+                    <div className="font-semibold">
+                      {entry.weekLabel} ({entry.weekStart}〜{entry.weekEnd})
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      更新: {new Date(entry.updatedAt).toLocaleDateString("ja-JP")}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-3 text-sm">
+                    <div className={diffClass(revDiff)}>
+                      売上 {yen(Math.round(entry.overall.revenue))}
+                      {prevEntry ? ` (${revDiff >= 0 ? "+" : ""}${yenSigned(revDiff)})` : ""}
+                    </div>
+                    <div className={diffClass(gpDiff)}>
+                      粗利 {yen(Math.round(entry.overall.grossProfit))}
+                      {prevEntry ? ` (${gpDiff >= 0 ? "+" : ""}${yenSigned(gpDiff)})` : ""}
+                    </div>
+                    <div className={diffClass(userDiff)}>
+                      有効ユーザー {Math.round(entry.overall.validUsers)}
+                      {prevEntry ? ` (${userDiff >= 0 ? "+" : ""}${userDiff})` : ""}
+                    </div>
+                  </div>
+                </summary>
+                <div className={css.cardBody}>
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="space-y-3">
+                      <div className="text-sm font-semibold text-slate-700">全体着地予想</div>
+                      <div className="grid grid-cols-2 gap-2 text-sm text-slate-700">
+                        <div>売上</div>
+                        <div className="text-right">{yen(Math.round(entry.overall.revenue))}</div>
+                        <div>粗利</div>
+                        <div className="text-right">{yen(Math.round(entry.overall.grossProfit))}</div>
+                        <div>有効ユーザー</div>
+                        <div className="text-right">{Math.round(entry.overall.validUsers)}</div>
+                        <div>顧客単価</div>
+                        <div className="text-right">
+                          {entry.overall.cup !== null
+                            ? yen(Math.round(entry.overall.cup))
+                            : "—"}
+                        </div>
+                      </div>
+                      <div className="text-sm font-semibold text-slate-700">増減内訳</div>
+                      <div className="grid grid-cols-2 gap-2 text-sm text-slate-600">
+                        <div>新規</div>
+                        <div className="text-right">{yen(entry.impact.newAcq)}</div>
+                        <div>退会</div>
+                        <div className="text-right">−{yen(entry.impact.withdraw)}</div>
+                        <div>停止</div>
+                        <div className="text-right">−{yen(entry.impact.suspendLoss)}</div>
+                        <div>減額</div>
+                        <div className="text-right">−{yen(entry.impact.otherDec)}</div>
+                        <div className="font-semibold">純増</div>
+                        <div className="text-right font-semibold">
+                          {yenSigned(entry.impact.net)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <div className="text-sm font-semibold text-slate-700 mb-2">
+                        商材別着地予想
+                      </div>
+                      <table className="min-w-[640px] w-full text-sm border-collapse">
+                        <thead>
+                          <tr>
+                            {[
+                              "商材",
+                              "売上",
+                              "粗利",
+                              "顧客単価",
+                              "有効ユーザー",
+                            ].map((h) => (
+                              <th key={h} className={`${css.th} text-left`}>
+                                {h}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {targetCategories.map((cat) => {
+                            const row =
+                              entry.byCategory[cat] ?? {
+                                revenue: 0,
+                                grossProfit: 0,
+                                validUsers: 0,
+                                cup: null,
+                              };
+                            return (
+                              <tr key={cat} className="hover:bg-slate-50">
+                                <td className={css.td}>{cat}</td>
+                                <td className={`${css.td} text-right`}>
+                                  {yen(Math.round(row.revenue))}
+                                </td>
+                                <td className={`${css.td} text-right`}>
+                                  {yen(Math.round(row.grossProfit))}
+                                </td>
+                                <td className={`${css.td} text-right`}>
+                                  {row.cup !== null ? yen(Math.round(row.cup)) : "—"}
+                                </td>
+                                <td className={`${css.td} text-right`}>
+                                  {Math.round(row.validUsers)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </details>
+            );
+          })
+        )}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <BigKPI
