@@ -103,6 +103,9 @@ interface BusinessMetric {
   adCost: number;
   cv: number;
   validUsers: number;
+  targetRevenue?: number;
+  targetGrossProfit?: number;
+  targetCUP?: number;
 }
 interface SalesOwner {
   ownerId: string;
@@ -611,6 +614,25 @@ function calcMonthlyForecast(
   };
 }
 
+function calcMonthlyForecastByCategory(
+  targetMonth: string,
+  clients: Client[],
+  changeLogs: ChangeLog[],
+  metrics: BusinessMetric[],
+  targetCategories: string[]
+): Record<string, MonthlyForecast> {
+  const result: Record<string, MonthlyForecast> = {};
+  for (const cat of targetCategories) {
+    result[cat] = calcMonthlyForecast(
+      targetMonth,
+      clients,
+      changeLogs,
+      metrics,
+      [cat]
+    );
+  }
+  return result;
+}
 
 /* ---------- 来月ストック予測 ---------- */
 interface MonthlyStockForecast {
@@ -3106,7 +3128,8 @@ function MetricsForm({
  
   useEffect(() => {
     const d: Record<string, Partial<BusinessMetric>> = {};
-    for (const cat of CATEGORIES) {
+    const rows = ["全体", ...CATEGORIES];
+    for (const cat of rows) {
       const found = metrics.find((m) => m.month === month && m.category === cat);
       d[cat] = found
         ? {
@@ -3123,7 +3146,8 @@ function MetricsForm({
  
   const save = () => {
     const updated = metrics.filter((m) => m.month !== month);
-    for (const cat of CATEGORIES) {
+    const rows = ["全体", ...CATEGORIES];
+    for (const cat of rows) {
       const d = draft[cat] || {};
       updated.push({
         month,
@@ -3173,7 +3197,7 @@ function MetricsForm({
               </tr>
             </thead>
             <tbody>
-              {CATEGORIES.map((cat) => {
+              { ["全体", ...CATEGORIES].map((cat) => {
                 const d = draft[cat] || {};
                 const rev = Number(d.revenue) || 0;
                 const gp = Number(d.grossProfit) || 0;
@@ -3181,7 +3205,7 @@ function MetricsForm({
                 const cv = Number(d.cv) || 0;
                 const vu = Number(d.validUsers) || 0;
                 return (
-                  <tr key={cat}>
+                  <tr key={cat} className={cat === "全体" ? "bg-slate-50" : ""}>
                     <td className={`${css.td} font-medium`}>{cat}</td>
                     <td className={css.td}>
                       <input
@@ -3574,6 +3598,7 @@ function Dashboard({
 }) {
   const [selectedCat, setSelectedCat] = useState<string | null>(null);
   const [storeBreakdownOpen, setStoreBreakdownOpen] = useState(false);
+  const [forecastByCatOpen, setForecastByCatOpen] = useState(false);
 
   // 商材フィルターを反映した数字
   const targetCategories =
@@ -3587,6 +3612,28 @@ function Dashboard({
   const totalRev = monthMetrics.reduce((s, m) => s + m.revenue, 0);
   const totalGP = monthMetrics.reduce((s, m) => s + m.grossProfit, 0);
   const totalVU = monthMetrics.reduce((s, m) => s + m.validUsers, 0);
+  const overallMetric = metrics.find(
+    (m) => m.month === targetMonth && m.category === "全体"
+  );
+  const totalTargetRevenue =
+    overallMetric?.category === "全体" && overallMetric.revenue > 0
+      ? overallMetric.revenue
+      : monthMetrics.reduce((s, m) => s + (m.targetRevenue || 0), 0);
+  const totalTargetGP =
+    overallMetric?.category === "全体" && overallMetric.grossProfit > 0
+      ? overallMetric.grossProfit
+      : monthMetrics.reduce((s, m) => s + (m.targetGrossProfit || 0), 0);
+  const avgTargetCUP =
+    overallMetric?.category === "全体" && overallMetric.validUsers > 0
+      ? overallMetric.revenue / overallMetric.validUsers
+      : (() => {
+          const targetCUPs = monthMetrics
+            .map((m) => m.targetCUP)
+            .filter((v): v is number => typeof v === "number" && v > 0);
+          return targetCUPs.length > 0
+            ? targetCUPs.reduce((s, v) => s + v, 0) / targetCUPs.length
+            : null;
+        })();
   const grossRate = totalRev > 0 ? totalGP / totalRev : 0;
 
   // 今月想定
@@ -3606,6 +3653,17 @@ function Dashboard({
       thisMonthForecast
     ),
     [targetMonth, clients, changeLogs, metrics, targetCategories, thisMonthForecast]
+  );
+
+  const thisMonthForecastByCat = useMemo(
+    () => calcMonthlyForecastByCategory(
+      targetMonth,
+      clients,
+      changeLogs,
+      metrics,
+      targetCategories
+    ),
+    [targetMonth, clients, changeLogs, metrics, targetCategories]
   );
 
   const nextMonth = monthKeyOfDate(
@@ -4012,6 +4070,11 @@ function Dashboard({
     return arr;
   }, [catRows]);
 
+  const formatProgress = (actual: number, target: number | null) =>
+    target && target > 0
+      ? `${Math.round((actual / target) * 100)}%`
+      : "";
+
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between flex-wrap gap-2">
@@ -4043,6 +4106,19 @@ function Dashboard({
             label="今月着地予想売上"
             value={yen(Math.round(thisMonthForecast.revenue))}
             sub={`粗利率 ${pct(thisMonthForecast.grossRate)}`}
+            target={
+              totalTargetRevenue > 0
+                ? `目標 ${yen(Math.round(totalTargetRevenue))}`
+                : undefined
+            }
+            progress={
+              totalTargetRevenue > 0
+                ? `進捗 ${formatProgress(
+                    thisMonthForecast.revenue,
+                    totalTargetRevenue
+                  )}`
+                : undefined
+            }
             logic={
               <>
                 <div>ランレート予測売上: {yen(Math.round(thisMonthForecast.baseForecastRevenue))}</div>
@@ -4057,6 +4133,19 @@ function Dashboard({
             label="今月着地予想粗利"
             value={yen(Math.round(thisMonthForecast.grossProfit))}
             sub={`売上 ${yen(Math.round(thisMonthForecast.revenue))}`}
+            target={
+              totalTargetGP > 0
+                ? `目標 ${yen(Math.round(totalTargetGP))}`
+                : undefined
+            }
+            progress={
+              totalTargetGP > 0
+                ? `進捗 ${formatProgress(
+                    thisMonthForecast.grossProfit,
+                    totalTargetGP
+                  )}`
+                : undefined
+            }
             logic={
               <>
                 <div>着地予想売上: {yen(Math.round(thisMonthForecast.revenue))}</div>
@@ -4069,6 +4158,19 @@ function Dashboard({
             label="今月着地予想顧客単価"
             value={thisMonthForecast.cup !== null ? yen(Math.round(thisMonthForecast.cup)) : "—"}
             sub={`有効ユーザー ${Math.round(thisMonthForecast.expectedVU)}`}
+            target={
+              avgTargetCUP !== null
+                ? `目標 ${yen(Math.round(avgTargetCUP))}`
+                : undefined
+            }
+            progress={
+              avgTargetCUP !== null && thisMonthForecast.cup !== null
+                ? `進捗 ${formatProgress(
+                    thisMonthForecast.cup,
+                    avgTargetCUP
+                  )}`
+                : undefined
+            }
             logic={
               <>
                 <div>着地予想売上: {yen(Math.round(thisMonthForecast.revenue))}</div>
@@ -4207,6 +4309,56 @@ function Dashboard({
           }
         />
       </div>
+
+      <details
+        className={css.card}
+        open={forecastByCatOpen}
+        onToggle={(e) => setForecastByCatOpen(e.currentTarget.open)}
+      >
+        <summary
+          className={`${css.cardHeader} cursor-pointer select-none flex items-center justify-between`}
+        >
+          <span>今月着地予想（商材別）</span>
+          <span className="text-xs text-slate-400">▾ クリックで展開</span>
+        </summary>
+        <div className={css.cardBody}>
+          <div className="overflow-x-auto">
+            <table className="min-w-[700px] w-full text-sm border-collapse">
+              <thead>
+                <tr>
+                  {[
+                    "商材",
+                    "着地予想売上",
+                    "着地予想粗利",
+                    "着地予想顧客単価",
+                    "想定有効ユーザー",
+                  ].map((h) => (
+                    <th key={h} className={`${css.th} text-left`}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {targetCategories.map((cat) => {
+                  const f = thisMonthForecastByCat[cat];
+                  return (
+                    <tr key={cat} className="hover:bg-slate-50">
+                      <td className={css.td}>{cat}</td>
+                      <td className={`${css.td} text-right`}>{yen(Math.round(f.revenue))}</td>
+                      <td className={`${css.td} text-right`}>{yen(Math.round(f.grossProfit))}</td>
+                      <td className={`${css.td} text-right`}>
+                        {f.cup !== null ? yen(Math.round(f.cup)) : "—"}
+                      </td>
+                      <td className={`${css.td} text-right`}>{Math.round(f.expectedVU)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
 
       <details
         className={css.card}
@@ -4720,6 +4872,8 @@ function BigKPI({
   sub,
   tone,
   onClick,
+  target,
+  progress,
   logic,
 }: {
   label: string;
@@ -4727,6 +4881,8 @@ function BigKPI({
   sub?: string;
   tone?: "up" | "down" | "flat";
   onClick?: () => void;
+  target?: string;
+  progress?: string;
   logic?: React.ReactNode;
 }) {
   const color =
@@ -4748,8 +4904,16 @@ function BigKPI({
       >
         <div className="text-[11px] text-slate-500">{label}</div>
         <div className={`text-xl font-bold mt-1 ${color}`}>{value}</div>
-        {sub && (
-          <div className="text-[10px] text-slate-400 mt-1 truncate">{sub}</div>
+        {(sub || target || progress) && (
+          <div className="mt-2 space-y-1 text-[10px] text-slate-500">
+            {sub && <div className="truncate">{sub}</div>}
+            {(target || progress) && (
+              <div className="flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                <div>{target}</div>
+                <div>{progress}</div>
+              </div>
+            )}
+          </div>
         )}
       </div>
       {logic && (
