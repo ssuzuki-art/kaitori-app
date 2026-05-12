@@ -52,6 +52,9 @@ type ViewKey =
 interface CategoryBudgets {
   [category: string]: number;
 }
+type EditableCategoryBudgets = {
+  [category: string]: number | undefined;
+};
 interface BrandSelection {
   category: string;
   selectionType: "all" | "partial";
@@ -335,7 +338,20 @@ function calcSuspendDecreaseForMonth(
 
   return result;
 }
- 
+
+function shouldCountNewStartImpact(
+  client: Client,
+  changeLogs: ChangeLog[],
+  sd: Date
+) {
+  return !changeLogs.some((log) => {
+    if (log.billingId !== client.billingId) return false;
+    if (log.changeType !== "withdraw" && log.changeType !== "suspend") return false;
+    const eff = parseD(log.effectiveDate);
+    return eff ? eff <= sd : false;
+  });
+}
+
 
  
 /* ---------- CSV ---------- */
@@ -627,7 +643,7 @@ function calcMonthlyForecast(
       sd &&
       sd.getFullYear() === year &&
       sd.getMonth() + 1 === month &&
-      (client.status === "scheduled" || client.status === "active")
+      shouldCountNewStartImpact(client, changeLogs, sd)
     ) {
       newStartImpact += prorateFrom(client.startDate, monthlyBudget);
     }
@@ -804,10 +820,10 @@ function calcClientImpact(
 
   const sd = parseD(client.startDate);
   if (
-    client.status === "active" &&
     sd &&
     sd.getFullYear() === year &&
-    sd.getMonth() + 1 === month
+    sd.getMonth() + 1 === month &&
+    shouldCountNewStartImpact(client, changeLogs, sd)
   ) {
     const ratio = (dim - sd.getDate() + 1) / dim;
     for (const cat of CATEGORIES) {
@@ -1170,14 +1186,6 @@ function calcMonthlyStockBudget(
     const sd = parseD(client.startDate);
     if (!sd || sd > monthEnd) continue;
 
-    const budgetByDay = Array(dim + 1).fill(0);
-    const startDay = sd < monthStart ? 1 : sd.getDate();
-    if (client.status === "active" || client.status === "scheduled") {
-      for (let d = startDay; d <= dim; d++) {
-        budgetByDay[d] = budgets;
-      }
-    }
-
     const logs = changeLogs
       .filter((l) => l.billingId === client.billingId)
       .map((l) => ({
@@ -1186,6 +1194,20 @@ function calcMonthlyStockBudget(
       }))
       .filter((l) => l.eff && l.eff <= monthEnd)
       .sort((a, b) => a.eff!.getTime() - b.eff!.getTime());
+
+    const budgetByDay = Array(dim + 1).fill(0);
+    const startDay = sd < monthStart ? 1 : sd.getDate();
+    const startReference = sd < monthStart ? monthStart : sd;
+    const stopBeforeStart = logs.some(
+      (log) =>
+        (log.changeType === "withdraw" || log.changeType === "suspend") &&
+        log.eff! <= startReference
+    );
+    if (!stopBeforeStart) {
+      for (let d = startDay; d <= dim; d++) {
+        budgetByDay[d] = budgets;
+      }
+    }
 
     for (const log of logs) {
       if (!log.eff) continue;
@@ -1879,10 +1901,10 @@ function RegisterClient({
   const [salesOwnerId, setSalesOwnerId] = useState<string>(
     owners[0]?.ownerId ?? ""
   );
-  const [monthlyBudget, setMonthlyBudget] = useState<number>(0);
-  const [leadUnitPrice, setLeadUnitPrice] = useState<number>(0);
+  const [monthlyBudget, setMonthlyBudget] = useState<string>("");
+  const [leadUnitPrice, setLeadUnitPrice] = useState<string>("");
   const [categories, setCategories] = useState<string[]>([]);
-  const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudgets>({});
+  const [categoryBudgets, setCategoryBudgets] = useState<EditableCategoryBudgets>({});
   const [brandSelections, setBrandSelections] = useState<BrandSelection[]>([]);
   const [areas, setAreas] = useState<string[]>([]);
   const [acquisitionDate, setAcquisitionDate] = useState<string>("");
@@ -1891,11 +1913,15 @@ function RegisterClient({
   const [note, setNote] = useState<string>("");
   const [error, setError] = useState<string>("");
  
+  const parsedMonthlyBudget =
+    monthlyBudget === "" ? undefined : Number(monthlyBudget);
+  const parsedLeadUnitPrice =
+    leadUnitPrice === "" ? 0 : Number(leadUnitPrice);
   const catSum = useMemo(
     () => categories.reduce((s, c) => s + (Number(categoryBudgets[c]) || 0), 0),
     [categories, categoryBudgets]
   );
-  const diff = monthlyBudget - catSum;
+  const diff = (parsedMonthlyBudget ?? 0) - catSum;
  
   const toggleCategory = (cat: string) => {
     setCategories((prev) =>
@@ -1922,7 +1948,9 @@ function RegisterClient({
     if (!salesOwnerId) return setError("営業担当を選択してください");
     if (categories.length === 0)
       return setError("商材を1つ以上選択してください");
-    if (catSum !== monthlyBudget)
+    if (parsedMonthlyBudget === undefined)
+      return setError("月間予算は必須です");
+    if (catSum !== parsedMonthlyBudget)
       return setError("商材ごとの配信予算の合計が月間予算と一致していません");
     if (!startDate) return setError("配信開始予定日は必須です");
  
@@ -1932,8 +1960,8 @@ function RegisterClient({
       salesOwnerId,
       acquisitionDate,
       startDate,
-      monthlyBudget,
-      leadUnitPrice,
+      monthlyBudget: parsedMonthlyBudget,
+      leadUnitPrice: parsedLeadUnitPrice,
       categories,
       categoryBudgets: Object.fromEntries(
         categories.map((cat) => [cat, Number(categoryBudgets[cat]) || 0])
@@ -1989,7 +2017,7 @@ function RegisterClient({
               className={css.input}
               type="number"
               value={monthlyBudget}
-              onChange={(e) => setMonthlyBudget(Number(e.target.value))}
+              onChange={(e) => setMonthlyBudget(e.target.value)}
             />
           </Field>
           <Field label="5. 送客単価">
@@ -1997,7 +2025,7 @@ function RegisterClient({
               className={css.input}
               type="number"
               value={leadUnitPrice}
-              onChange={(e) => setLeadUnitPrice(Number(e.target.value))}
+              onChange={(e) => setLeadUnitPrice(e.target.value)}
             />
           </Field>
         </div>
@@ -2040,7 +2068,7 @@ function RegisterClient({
                     onChange={(e) =>
                       setCategoryBudgets({
                         ...categoryBudgets,
-                        [cat]: Number(e.target.value),
+                        [cat]: e.target.value === "" ? undefined : Number(e.target.value),
                       })
                     }
                   />
@@ -2049,7 +2077,7 @@ function RegisterClient({
             </div>
             <div className="mt-3 flex gap-4 text-sm flex-wrap">
               <div>
-                月間予算: <b>{yen(monthlyBudget)}</b>
+                月間予算: <b>{monthlyBudget === "" ? "—" : yen(Number(monthlyBudget))}</b>
               </div>
               <div>
                 商材別合計: <b>{yen(catSum)}</b>
@@ -2272,7 +2300,7 @@ function ChangeForm({
   const [affectedBrands, setAffectedBrands] = useState<string[]>([]);
   const [affectedAreas, setAffectedAreas] = useState<string[]>([]);
   const [decreasedByCategory, setDecreasedByCategory] =
-    useState<CategoryBudgets>({});
+    useState<EditableCategoryBudgets>({});
   const [decreasedBudget] = useState<number>(0);
   const [reason, setReason] = useState("");
   const [recovery, setRecovery] = useState<RecoveryPossibility>("unknown");
@@ -2280,8 +2308,8 @@ function ChangeForm({
   const [error, setError] = useState("");
   const [newCategories, setNewCategories] = useState<string[]>([]);
   const [newAreas, setNewAreas] = useState<string[]>([]);
-  const [newCategoryBudgets, setNewCategoryBudgets] = useState<CategoryBudgets>({});
-　const [newBrandSelections, setNewBrandSelections] = useState<BrandSelection[]>([]);
+  const [newCategoryBudgets, setNewCategoryBudgets] = useState<EditableCategoryBudgets>({});
+  const [newBrandSelections, setNewBrandSelections] = useState<BrandSelection[]>([]);
 
 
   const fetchClient = () => {
@@ -2312,10 +2340,10 @@ function ChangeForm({
 
   };
 
-  const totalDecByCat = useMemo(
+  const totalDecByCat = useMemo<number>(
     () =>
-      Object.values(decreasedByCategory).reduce(
-        (s, v) => s + (v as number),
+      Object.values(decreasedByCategory).reduce<number>(
+        (s, v) => s + (v ?? 0),
         0
       ),
     [decreasedByCategory]
@@ -2415,7 +2443,9 @@ function ChangeForm({
       dec = -added;
     } else if (changeType === "down_sell") {
       if (Object.keys(decreasedByCategory).length > 0) {
-        decByCat = decreasedByCategory;
+        decByCat = Object.fromEntries(
+          Object.entries(decreasedByCategory).map(([cat, value]) => [cat, value ?? 0])
+        ) as CategoryBudgets;
         dec = totalDecByCat;
       }
     } else if (
@@ -2424,7 +2454,9 @@ function ChangeForm({
       changeType === "area_reduce"
     ) {
       if (Object.keys(decreasedByCategory).length > 0) {
-        decByCat = decreasedByCategory;
+        decByCat = Object.fromEntries(
+          Object.entries(decreasedByCategory).map(([cat, value]) => [cat, value ?? 0])
+        ) as CategoryBudgets;
         dec = totalDecByCat;
       }
     }
@@ -2488,7 +2520,11 @@ function ChangeForm({
       newCategories: changeType === "category_change" ? newCategories : undefined,
       newAreas: changeType === "area_change" ? newAreas : undefined,
       newCategoryBudgets:
-        changeType === "category_change" ? newCategoryBudgets : undefined,
+        changeType === "category_change"
+          ? (Object.fromEntries(
+              Object.entries(newCategoryBudgets).map(([cat, value]) => [cat, value ?? 0])
+            ) as CategoryBudgets)
+          : undefined,
       newBrandSelections:
         changeType === "category_change" ? newBrandSelections : undefined,
       reason,
@@ -2880,7 +2916,10 @@ function ChangeForm({
                             onChange={(e) =>
                               setDecreasedByCategory({
                                 ...decreasedByCategory,
-                                [cat]: Number(e.target.value),
+                                [cat]:
+                                  e.target.value === ""
+                                    ? undefined
+                                    : Number(e.target.value),
                               })
                             }
                           />
@@ -2956,7 +2995,10 @@ function ChangeForm({
                             onChange={(e) =>
                               setDecreasedByCategory({
                                 ...decreasedByCategory,
-                                [cat]: Number(e.target.value),
+                                [cat]:
+                                  e.target.value === ""
+                                    ? undefined
+                                    : Number(e.target.value),
                               })
                             }
                           />
@@ -3079,7 +3121,10 @@ function ChangeForm({
                 onChange={(e) =>
                   setNewCategoryBudgets({
                     ...newCategoryBudgets,
-                    [cat]: Number(e.target.value),
+                    [cat]:
+                      e.target.value === ""
+                        ? undefined
+                        : Number(e.target.value),
                   })
                 }
               />
@@ -3296,7 +3341,13 @@ function MetricsForm({
                         onChange={(e) =>
                           setDraft({
                             ...draft,
-                            [cat]: { ...d, revenue: Number(e.target.value) },
+                            [cat]: {
+                              ...d,
+                              revenue:
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                            },
                           })
                         }
                       />
@@ -3311,7 +3362,10 @@ function MetricsForm({
                             ...draft,
                             [cat]: {
                               ...d,
-                              grossProfit: Number(e.target.value),
+                              grossProfit:
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
                             },
                           })
                         }
@@ -3326,7 +3380,13 @@ function MetricsForm({
                         onChange={(e) =>
                           setDraft({
                             ...draft,
-                            [cat]: { ...d, adCost: Number(e.target.value) },
+                            [cat]: {
+                              ...d,
+                              adCost:
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                            },
                           })
                         }
                       />
@@ -3339,7 +3399,13 @@ function MetricsForm({
                         onChange={(e) =>
                           setDraft({
                             ...draft,
-                            [cat]: { ...d, cv: Number(e.target.value) },
+                            [cat]: {
+                              ...d,
+                              cv:
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                            },
                           })
                         }
                       />
@@ -3355,7 +3421,10 @@ function MetricsForm({
                             ...draft,
                             [cat]: {
                               ...d,
-                              validUsers: Number(e.target.value),
+                              validUsers:
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
                             },
                           })
                         }
