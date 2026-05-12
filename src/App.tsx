@@ -574,11 +574,13 @@ function calcMonthlyForecast(
   today.setHours(0, 0, 0, 0);
   const isCurrentMonth = targetMonth === todayMonth();
   // 事業数字は「前日締め」で入力される想定。
-　// 例：5/8に見る数字は5/7時点実績なので、経過日数は7日。
-　const elapsedDays = isCurrentMonth
-  ? Math.min(Math.max(today.getDate() - 1, 1), dim)
-  : dim;
+  // 例：5/8に見る数字は5/7時点実績なので、経過日数は7日。
+  const elapsedDays = isCurrentMonth
+    ? Math.min(Math.max(today.getDate() - 1, 1), dim)
+    : dim;
 
+  // 当月の場合、実績締め日 = 今日の前日、未反映開始日 = 今日
+  const unreflectedStartDate = isCurrentMonth ? today : null;
 
   const monthMetrics = metrics.filter(
     (m) => m.month === targetMonth && targetCategories.includes(m.category)
@@ -587,20 +589,20 @@ function calcMonthlyForecast(
   const currentRevenue = monthMetrics.reduce((s, m) => s + m.revenue, 0);
   const currentVU = monthMetrics.reduce((s, m) => s + m.validUsers, 0);
 
- const metricsWithGross = monthMetrics.filter(
-  (m) => m.revenue > 0 && m.grossProfit > 0
-);
+  const metricsWithGross = monthMetrics.filter(
+    (m) => m.revenue > 0 && m.grossProfit > 0
+  );
 
-　const currentGrossRate =
-  metricsWithGross.length > 0
-    ? metricsWithGross.reduce((s, m) => s + m.grossProfit, 0) /
-      metricsWithGross.reduce((s, m) => s + m.revenue, 0)
-    : null;
+  const currentGrossRate =
+    metricsWithGross.length > 0
+      ? metricsWithGross.reduce((s, m) => s + m.grossProfit, 0) /
+        metricsWithGross.reduce((s, m) => s + m.revenue, 0)
+      : null;
 
-　const grossRate =
-  currentGrossRate ??
-  calcAvgGrossRate(targetMonth, targetCategories, metrics) ??
-  0.3;
+  const grossRate =
+    currentGrossRate ??
+    calcAvgGrossRate(targetMonth, targetCategories, metrics) ??
+    0.3;
 
   const baseForecastRevenue =
     currentRevenue > 0 ? (currentRevenue / elapsedDays) * dim : 0;
@@ -620,12 +622,28 @@ function calcMonthlyForecast(
       .filter(([cat]) => targetCategories.includes(cat))
       .reduce((s, [, v]) => s + Number(v || 0), 0);
 
+  // 日割り計算：当月の場合は未反映期間のみを対象にする
   const prorateFrom = (dateStr: string, amount: number) => {
     const d = parseD(dateStr);
     if (!d) return 0;
     if (d.getFullYear() !== year || d.getMonth() + 1 !== month) return 0;
-    const activeDays = dim - d.getDate() + 1;
-    return amount * (activeDays / dim);
+
+    if (isCurrentMonth && unreflectedStartDate) {
+      // 有効日が未反映開始日より前なら、未反映開始日から計算
+      const effectiveDate = new Date(d);
+      const startDateForProration =
+        effectiveDate < unreflectedStartDate ? unreflectedStartDate : effectiveDate;
+
+      // 開始日が月末以降なら、日割りなし
+      if (startDateForProration.getDate() > dim) return 0;
+
+      const activeDays = dim - startDateForProration.getDate() + 1;
+      return amount * (activeDays / dim);
+    } else {
+      // 過去月・未来月の場合は既存の動作
+      const activeDays = dim - d.getDate() + 1;
+      return amount * (activeDays / dim);
+    }
   };
 
   let newStartImpact = 0;
@@ -4346,9 +4364,10 @@ function Dashboard({
             logic={
               <>
                 <div>ランレート予測売上: {yen(Math.round(thisMonthForecast.baseForecastRevenue))}</div>
-                <div>開始/再開追加: {yen(Math.round(thisMonthForecast.newStartImpact + thisMonthForecast.resumeImpact))}</div>
-                <div>停止/退会影響: −{yen(Math.round(thisMonthForecast.stopRevenue + thisMonthForecast.withdrawRevenue))}</div>
-                <div>減額影響: −{yen(Math.round(thisMonthForecast.reduceRevenue))}</div>
+                <div className="text-xs text-slate-500 mb-1">前日締め実績を月末まで伸ばしたもの</div>
+                <div>未反映期間の開始/再開追加: {yen(Math.round(thisMonthForecast.newStartImpact + thisMonthForecast.resumeImpact))}</div>
+                <div>未反映期間の停止/退会影響: −{yen(Math.round(thisMonthForecast.stopRevenue + thisMonthForecast.withdrawRevenue))}</div>
+                <div>未反映期間の減額影響: −{yen(Math.round(thisMonthForecast.reduceRevenue))}</div>
                 <div className="font-semibold">合計着地予想売上: {yen(Math.round(thisMonthForecast.revenue))}</div>
               </>
             }
