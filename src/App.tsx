@@ -3293,15 +3293,22 @@ function MetricsForm({
     const rows = ["全体", ...CATEGORIES];
     for (const cat of rows) {
       const d = draft[cat] || {};
-      updated.push({
-        month,
-        category: cat,
-        revenue: Number(d.revenue) || 0,
-        grossProfit: Number(d.grossProfit) || 0,
-        adCost: Number(d.adCost) || 0,
-        cv: Number(d.cv) || 0,
-        validUsers: Number(d.validUsers) || 0,
-      });
+     const revenue = Number(d.revenue) || 0;
+const adCost = Number(d.adCost) || 0;
+const grossProfit = revenue - adCost;
+
+updated.push({
+  month,
+  category: cat,
+  revenue,
+  grossProfit,
+  adCost,
+
+  // CV数は入力しない。既存値があれば保持、なければ0
+  cv: Number(d.cv) || 0,
+
+  validUsers: Number(d.validUsers) || 0,
+});
     }
     setMetrics(updated);
   };
@@ -3344,10 +3351,10 @@ function MetricsForm({
               { ["全体", ...CATEGORIES].map((cat) => {
                 const d = draft[cat] || {};
                 const rev = Number(d.revenue) || 0;
-                const gp = Number(d.grossProfit) || 0;
-                const ad = Number(d.adCost) || 0;
-                const cv = Number(d.cv) || 0;
-                const vu = Number(d.validUsers) || 0;
+　　　　　　　　　　const ad = Number(d.adCost) || 0;
+　　　　　　　　　　const gp = rev - ad;
+　　　　　　　　　　const cv = Number(d.cv) || 0;
+　　　　　　　　　　const vu = Number(d.validUsers) || 0;
                 return (
                   <tr key={cat} className={cat === "全体" ? "bg-slate-50" : ""}>
                     <td className={`${css.td} font-medium`}>{cat}</td>
@@ -3370,45 +3377,12 @@ function MetricsForm({
                         }
                       />
                     </td>
-                    <td className={css.td}>
-                      <input
-                        className={css.input}
-                        type="number"
-                        value={d.grossProfit ?? ""}
-                        onChange={(e) =>
-                          setDraft({
-                            ...draft,
-                            [cat]: {
-                              ...d,
-                              grossProfit:
-                                e.target.value === ""
-                                  ? undefined
-                                  : Number(e.target.value),
-                            },
-                          })
-                        }
-                      />
-                    </td>
-                    <td className={css.td}>{rev > 0 ? pct(gp / rev) : "—"}</td>
-                    <td className={css.td}>
-                      <input
-                        className={css.input}
-                        type="number"
-                        value={d.adCost ?? ""}
-                        onChange={(e) =>
-                          setDraft({
-                            ...draft,
-                            [cat]: {
-                              ...d,
-                              adCost:
-                                e.target.value === ""
-                                  ? undefined
-                                  : Number(e.target.value),
-                            },
-                          })
-                        }
-                      />
-                    </td>
+                    <td className={`${css.td} font-medium`}>
+  {yen(gp)}
+</td>
+                   <td className={css.td}>
+  {cv > 0 ? cv.toLocaleString() : "—"}
+</td>
                     <td className={css.td}>
                       <input
                         className={css.input}
@@ -6063,6 +6037,9 @@ function ClientsList({
               (b.declaredDate || "").localeCompare(a.declaredDate || "")
             )[0];
 
+          // 対象月の影響計算
+          const impact = calcClientImpact(targetMonth, c, changeLogs);
+
           const isExpanded = expandedId === c.billingId;
 
           return (
@@ -6208,7 +6185,9 @@ function ClientsList({
 
                 {c.status === "withdrawn" && (
                   <div className="mt-2 pt-2 border-t border-slate-100 text-slate-400">
-                    退会済み（事業数字への影響なし）
+                    {impact.withdraw > 0
+                      ? `退会済み：対象月影響 −${yen(impact.withdraw)}`
+                      : "退会済み（対象月への追加影響なし）"}
                   </div>
                 )}
 
