@@ -6810,6 +6810,7 @@ function PaymentView({
         <PaymentModal
           inv={editTarget}
           clients={clients}
+          owners={owners}
           isNew={addingNew}
           onSave={saveInvoice}
           onClose={() => { setEditTarget(null); setAddingNew(false); }}
@@ -6848,12 +6849,14 @@ function PaymentView({
 function PaymentModal({
   inv,
   clients,
+  owners,
   isNew,
   onSave,
   onClose,
 }: {
   inv: InvoicePayment;
   clients: Client[];
+  owners: SalesOwner[];
   isNew: boolean;
   onSave: (updated: InvoicePayment) => void;
   onClose: () => void;
@@ -6917,8 +6920,13 @@ function PaymentModal({
               </select>
             </Field>
             <Field label="担当者">
-              <input className={css.input} value={form.assignee}
-                onChange={(e) => set({ assignee: e.target.value })} />
+              <select className={css.input} value={form.assignee}
+                onChange={(e) => set({ assignee: e.target.value })}>
+                <option value="">未設定</option>
+                {owners.filter(o => o.isActive).map(o => (
+                  <option key={o.ownerId} value={o.ownerName}>{o.ownerName}</option>
+                ))}
+              </select>
             </Field>
           </div>
 
