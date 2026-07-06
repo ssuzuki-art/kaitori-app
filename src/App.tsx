@@ -6941,7 +6941,7 @@ interface ParsedImportRow {
 }
 
 function parseTransferText(text: string, clients: Client[]): ParsedImportRow[] {
-  const INVOICE_RE = /^\d{6}-[\d]+-\d+$/;
+  const INVOICE_RE = /^\d{6}-[\w]+-\d+$/;
   const parseAmt = (s: string) => Number((s || "").replace(/[,¥\s]/g, "")) || 0;
 
   return text
@@ -7022,19 +7022,12 @@ function ImportModal({
   const updateRow = (idx: number, patch: Partial<ParsedImportRow>) =>
     setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
 
-  // 請求書番号から月を推定（YYYYMM-...）
-  const monthFromInvoice = (invNum: string) => {
-    const m = invNum.match(/^(\d{4})(\d{2})-/);
-    if (!m) return invoiceMonth;
-    return `${m[1]}-${m[2]}`;
-  };
-
   const doImport = () => {
     const results: InvoicePayment[] = rows
       .map((r): InvoicePayment | null => {
         const billingId = r.overrideBillingId || r.idFromInvoice;
         if (!billingId) return null;
-        const month = monthFromInvoice(r.invoiceNumber);
+        const month = invoiceMonth; // 常に対象月に保存
         const existing = existingPayments.find(
           (p) => p.billingId === billingId && p.invoiceMonth === month
         );
