@@ -1521,6 +1521,7 @@ export default function App() {
   const [weeklyForecasts, setWeeklyForecasts] = useState<WeeklyForecastEntry[]>([]);
   const [payments, setPayments] = useState<InvoicePayment[]>([]);
   const [paymentOwnerLogs, setPaymentOwnerLogs] = useState<PaymentOwnerLog[]>([]);
+  const saveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
   const load = async () => {
@@ -1553,7 +1554,8 @@ export default function App() {
 }, []);
 useEffect(() => {
   if (!loaded) return;
-  const save = async () => {
+  if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+  saveTimerRef.current = setTimeout(async () => {
     const { error } = await supabase.from("app_state").upsert({
       id: "main",
       data: {
@@ -1571,9 +1573,7 @@ useEffect(() => {
       console.error("Supabase save error:", error);
       alert(`保存エラー: ${error.message}`);
     }
-  };
-
-  save();
+  }, 800);
 }, [loaded, clients, changeLogs, metrics, owners, brands, weeklyForecasts, payments, paymentOwnerLogs]);
 
 useEffect(() => {
