@@ -6926,6 +6926,7 @@ function PaymentModal({
 interface ParsedImportRow {
   companyNameRaw: string;
   invoiceNumber: string;
+  idFromInvoice: string;
   invoiceAmount: number;
   unpaidAmount: number;
   paymentMethod: string;
@@ -6978,6 +6979,7 @@ function parseTransferText(text: string, clients: Client[]): ParsedImportRow[] {
       return {
         companyNameRaw,
         invoiceNumber,
+        idFromInvoice,
         invoiceAmount,
         unpaidAmount,
         paymentMethod,
@@ -7024,17 +7026,18 @@ function ImportModal({
 
   const doImport = () => {
     const results: InvoicePayment[] = rows
-      .filter((r) => r.overrideBillingId)
       .map((r) => {
+        const billingId = r.overrideBillingId || r.idFromInvoice;
+        if (!billingId) return null;
         const month = monthFromInvoice(r.invoiceNumber);
         const existing = existingPayments.find(
-          (p) => p.billingId === r.overrideBillingId && p.invoiceMonth === month
+          (p) => p.billingId === billingId && p.invoiceMonth === month
         );
         const paidAmount = r.invoiceAmount - r.unpaidAmount;
         return {
           invoiceId: existing?.invoiceId ?? uid(),
           invoiceNumber: r.invoiceNumber,
-          billingId: r.overrideBillingId,
+          billingId,
           invoiceMonth: month,
           invoiceAmount: r.invoiceAmount,
           paidAmount: Math.max(0, paidAmount),
@@ -7046,11 +7049,12 @@ function ImportModal({
           note: r.paymentMethod ? `${r.paymentMethod}${r.dateRaw ? " " + r.dateRaw : ""}` : (existing?.note ?? ""),
           dailyChecks: existing?.dailyChecks ?? {},
         };
-      });
+      })
+      .filter((r): r is InvoicePayment => r !== null);
     onImport(results);
   };
 
-  const unmatched = rows.filter((r) => !r.overrideBillingId).length;
+  const unmatched = rows.filter((r) => !r.overrideBillingId && !r.idFromInvoice).length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
@@ -7112,7 +7116,7 @@ function ImportModal({
                     </thead>
                     <tbody>
                       {rows.map((r, idx) => (
-                        <tr key={idx} className={!r.overrideBillingId ? "bg-amber-50" : ""}>
+                        <tr key={idx} className={!r.overrideBillingId ? "bg-sky-50" : ""}>
                           <td className={`${css.td} text-sm`}>{r.companyNameRaw}</td>
                           <td className={`${css.td} text-xs text-slate-500`}>{r.invoiceNumber}</td>
                           <td className={`${css.td} text-right tabular-nums`}>{yen(r.invoiceAmount)}</td>
@@ -7123,11 +7127,11 @@ function ImportModal({
                           <td className={`${css.td} text-xs`}>{r.dateRaw}</td>
                           <td className={css.td}>
                             <select
-                              className={`${css.input} text-xs ${!r.overrideBillingId ? "border-amber-400" : ""}`}
+                              className={`${css.input} text-xs`}
                               value={r.overrideBillingId}
                               onChange={(e) => updateRow(idx, { overrideBillingId: e.target.value })}
                             >
-                              <option value="">── 未マッチ（スキップ）</option>
+                              <option value="">── 未登録（{r.idFromInvoice || "ID不明"}で登録）</option>
                               {clients
                                 .filter((c) => c.status !== "withdrawn")
                                 .map((c) => (
@@ -7148,9 +7152,9 @@ function ImportModal({
                   <button
                     className={css.btn}
                     onClick={doImport}
-                    disabled={rows.filter((r) => r.overrideBillingId).length === 0}
+                    disabled={rows.length === 0}
                   >
-                    {rows.filter((r) => r.overrideBillingId).length}件をインポート
+                    {rows.length}件をインポート
                   </button>
                 </div>
               </>
