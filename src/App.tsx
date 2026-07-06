@@ -57,6 +57,7 @@ const PAYMENT_STATUSES = [
   "口座振替待ち",
   "連続未収",
   "クレカ",
+  "未収",
 ] as const;
 type PaymentStatusLabel = typeof PAYMENT_STATUSES[number] | "";
 
@@ -7081,7 +7082,7 @@ function ImportModal({
           invoiceMonth: month,
           invoiceAmount: r.invoiceAmount,
           paidAmount: Math.max(0, paidAmount),
-          status: (paidAmount <= 0 ? "入金待ち" : paidAmount >= r.invoiceAmount ? "入金済" : "入金待ち") as PaymentStatusLabel,
+          status: (paidAmount >= r.invoiceAmount ? "入金済" : "未収") as PaymentStatusLabel,
           isSuspended: existing?.isSuspended ?? false,
           isResumed: existing?.isResumed ?? false,
           unpaidSuspendDate: existing?.unpaidSuspendDate ?? "",
