@@ -82,6 +82,7 @@ interface InvoicePayment {
   assignee: string;         // 担当者
   note: string;
   dailyChecks: Record<string, boolean>; // 日別入金チェック "7/1"→true
+  companyNameOverride?: string; // 未登録加盟店用会社名
 }
  
 interface CategoryBudgets {
@@ -6476,8 +6477,12 @@ function PaymentView({
   const totalUnpaid = invoiceList.reduce((s, i) => s + Math.max(0, i.invoiceAmount - i.paidAmount), 0);
   const totalPaidAmt = invoiceList.reduce((s, i) => s + i.paidAmount, 0);
 
-  const getCompanyName = (billingId: string) =>
-    clients.find((c) => c.billingId === billingId)?.companyName ?? billingId;
+  const getCompanyName = (billingId: string) => {
+    const fromClient = clients.find((c) => c.billingId === billingId)?.companyName;
+    if (fromClient) return fromClient;
+    const fromPayment = invoiceList.find((p) => p.billingId === billingId)?.companyNameOverride;
+    return fromPayment ?? billingId;
+  };
 
   const saveInvoice = (updated: InvoicePayment) => {
     setPayments((prev) => {
@@ -6634,7 +6639,7 @@ function PaymentView({
           invoiceList={invoiceList}
           paymentOwnerLogs={paymentOwnerLogs}
           setPaymentOwnerLogs={setPaymentOwnerLogs}
-          getCompanyName={(id) => clients.find((c) => c.billingId === id)?.companyName ?? id}
+          getCompanyName={getCompanyName}
         />
       )}
 
@@ -7026,7 +7031,7 @@ function ImportModal({
 
   const doImport = () => {
     const results: InvoicePayment[] = rows
-      .map((r) => {
+      .map((r): InvoicePayment | null => {
         const billingId = r.overrideBillingId || r.idFromInvoice;
         if (!billingId) return null;
         const month = monthFromInvoice(r.invoiceNumber);
@@ -7048,9 +7053,10 @@ function ImportModal({
           assignee: existing?.assignee ?? "",
           note: r.paymentMethod ? `${r.paymentMethod}${r.dateRaw ? " " + r.dateRaw : ""}` : (existing?.note ?? ""),
           dailyChecks: existing?.dailyChecks ?? {},
+          companyNameOverride: r.overrideBillingId ? undefined : (r.companyNameRaw || undefined),
         };
       })
-      .filter((r): r is InvoicePayment => r !== null);
+      .filter((r): r is InvoicePayment => r !== null) as InvoicePayment[];
     onImport(results);
   };
 
