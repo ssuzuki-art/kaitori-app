@@ -1816,6 +1816,7 @@ useEffect(() => {
           {view === "payment" && (
             <PaymentView
               targetMonth={targetMonth}
+              setTargetMonth={setTargetMonth}
               clients={clients}
               changeLogs={changeLogs}
               payments={payments}
@@ -6403,6 +6404,7 @@ function makeBlankInvoice(c: Client, invoiceMonth: string, owners: SalesOwner[])
 
 function PaymentView({
   targetMonth,
+  setTargetMonth,
   clients,
   changeLogs,
   payments,
@@ -6412,6 +6414,7 @@ function PaymentView({
   setPaymentOwnerLogs,
 }: {
   targetMonth: string;
+  setTargetMonth: React.Dispatch<React.SetStateAction<string>>;
   clients: Client[];
   changeLogs: ChangeLog[];
   payments: InvoicePayment[];
@@ -6476,6 +6479,19 @@ function PaymentView({
   // 未金額合計・入金額合計（合計行）
   const totalUnpaid = invoiceList.reduce((s, i) => s + Math.max(0, i.invoiceAmount - i.paidAmount), 0);
   const totalPaidAmt = invoiceList.reduce((s, i) => s + i.paidAmount, 0);
+
+  // 全月の未入金回数・総未入金額（billingId別）
+  const unpaidStats = useMemo(() => {
+    const map: Record<string, { count: number; total: number }> = {};
+    for (const p of payments) {
+      const unpaid = p.invoiceAmount - p.paidAmount;
+      if (unpaid <= 0) continue;
+      if (!map[p.billingId]) map[p.billingId] = { count: 0, total: 0 };
+      map[p.billingId].count += 1;
+      map[p.billingId].total += unpaid;
+    }
+    return map;
+  }, [payments]);
 
   const getCompanyName = (billingId: string) => {
     const fromClient = clients.find((c) => c.billingId === billingId)?.companyName;
@@ -6653,7 +6669,7 @@ function PaymentView({
                 <td className="p-2 text-slate-600" colSpan={4}>合計</td>
                 <td className="p-2 text-right tabular-nums text-red-700">{yen(totalUnpaid)}</td>
                 <td className="p-2 text-right tabular-nums text-emerald-700">{yen(totalPaidAmt)}</td>
-                <td colSpan={3 + dim}></td>
+                <td colSpan={5 + dim}></td>
               </tr>
               {/* ヘッダー行 */}
               <tr>
@@ -6663,6 +6679,8 @@ function PaymentView({
                 <th className={`${css.th} text-center`} style={{ minWidth: 52 }}>再開済</th>
                 <th className={`${css.th} text-right`} style={{ minWidth: 96 }}>未金額</th>
                 <th className={`${css.th} text-right`} style={{ minWidth: 96 }}>入金額</th>
+                <th className={`${css.th} text-right`} style={{ minWidth: 64 }}>未入金回数</th>
+                <th className={`${css.th} text-right`} style={{ minWidth: 96 }}>総未入金額</th>
                 <th className={css.th} style={{ minWidth: 60 }}>担当者</th>
                 <th className={css.th} style={{ minWidth: 100 }}>ステータス</th>
                 <th className={css.th} style={{ minWidth: 120 }}>メモ</th>
@@ -6711,6 +6729,20 @@ function PaymentView({
                     <td className={`${css.td} text-right tabular-nums text-sm ${inv.paidAmount > 0 ? "text-emerald-700 font-medium" : "text-slate-400"}`}>
                       {inv.paidAmount > 0 ? yen(inv.paidAmount) : ""}
                     </td>
+                    {/* G2: 未入金回数 */}
+                    {(() => {
+                      const st = unpaidStats[inv.billingId];
+                      return (
+                        <>
+                          <td className={`${css.td} text-right tabular-nums text-sm ${st && st.count > 1 ? "text-red-700 font-medium" : "text-slate-400"}`}>
+                            {st ? `${st.count}回` : ""}
+                          </td>
+                          <td className={`${css.td} text-right tabular-nums text-sm ${st && st.total > 0 ? "text-red-700 font-medium" : "text-slate-400"}`}>
+                            {st ? yen(st.total) : ""}
+                          </td>
+                        </>
+                      );
+                    })()}
                     {/* G: 担当者 */}
                     <td className={`${css.td} text-xs`}>{inv.assignee}</td>
                     {/* H: ステータス */}
@@ -6796,6 +6828,10 @@ function PaymentView({
               }
               return next;
             });
+            // インポートしたデータの月に自動切り替え
+            if (newPayments.length > 0 && newPayments[0].invoiceMonth !== targetMonth) {
+              setTargetMonth(newPayments[0].invoiceMonth);
+            }
             setShowImport(false);
           }}
           onClose={() => setShowImport(false)}
@@ -7022,12 +7058,18 @@ function ImportModal({
   const updateRow = (idx: number, patch: Partial<ParsedImportRow>) =>
     setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
 
+  const monthFromInvoice = (invNum: string) => {
+    const m = invNum.match(/^(\d{4})(\d{2})-/);
+    if (!m) return invoiceMonth;
+    return `${m[1]}-${m[2]}`;
+  };
+
   const doImport = () => {
     const results: InvoicePayment[] = rows
       .map((r): InvoicePayment | null => {
         const billingId = r.overrideBillingId || r.idFromInvoice;
         if (!billingId) return null;
-        const month = invoiceMonth; // 常に対象月に保存
+        const month = monthFromInvoice(r.invoiceNumber);
         const existing = existingPayments.find(
           (p) => p.billingId === billingId && p.invoiceMonth === month
         );
