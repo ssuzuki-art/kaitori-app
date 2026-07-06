@@ -48,7 +48,8 @@ type ViewKey =
   | "metrics"
   | "cup-analysis"
   | "masters"
-  | "payment";
+  | "payment"
+  | "guide";
 
 // 入金ステータス（スプシと同じ選択肢）
 const PAYMENT_STATUSES = [
@@ -1640,6 +1641,7 @@ useEffect(() => {
     { key: "cup-analysis", label: "顧客単価分析", icon: "◐" },
     { key: "payment", label: "入金管理", icon: "¥" },
     { key: "masters", label: "マスタ", icon: "⚙" },
+    { key: "guide", label: "使い方ガイド", icon: "?" },
   ];
 
   // 営業/商材フィルター適用済みのデータ
@@ -1841,6 +1843,7 @@ useEffect(() => {
               setMetrics={setMetrics}
             />
           )}
+          {view === "guide" && <GuideView />}
         </main>
       </div>
     </div>
@@ -7407,6 +7410,133 @@ function OwnerProgressView({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------- 使い方ガイド ---------- */
+function GuideView() {
+  const [open, setOpen] = useState<string | null>("payment");
+  const sections = [
+    {
+      id: "payment",
+      title: "入金管理",
+      icon: "¥",
+      content: [
+        {
+          heading: "転記インポートの使い方",
+          body: `請求システムの未収一覧画面から行をすべて選択してコピーし、「転記インポート」ボタンを押して貼り付けます。\n\n【自動検出される列】\n・請求書番号（YYYYMM-XXXXX-N 形式）\n・会社名（請求書番号の2列左）\n・請求額・未収額（請求書番号の右1・2列目）\n・入金方法・日付（右3・5列目）\n\n解析後、登録済み加盟店は自動でマッチします。未登録の会社は請求書番号のIDで登録されます。インポート後、請求書番号の月に自動で切り替わります。`,
+        },
+        {
+          heading: "ステータスの種類",
+          body: `・未収 → インポート時のデフォルト\n・入金済 → 全額入金完了\n・入金待ち → 入金連絡あり、着金待ち\n・口座振替待ち → 口座振替予定\n・連続未収 → 複数月連続で未収\n・クレカ → クレジットカード払い`,
+        },
+        {
+          heading: "担当別進捗タブ",
+          body: `「担当別進捗」タブでは営業担当ごとに担当会社の入金状況を確認できます。\n\n・担当者カードをクリックすると、その担当の請求一覧と日次活動ログが表示されます\n・日付セルをクリックしてその日の活動メモを記入できます（Enter で保存、Esc でキャンセル）\n・担当者はマスタ画面で登録した「営業担当」と自動連携します`,
+        },
+        {
+          heading: "未入金回数・総未入金額",
+          body: `一覧表の「未入金回数」「総未入金額」列は、全月を通じてその会社が未入金だった月数と合計金額を表示します。\n\n2回以上の未入金は赤字で強調表示されます。`,
+        },
+      ],
+    },
+    {
+      id: "clients",
+      title: "加盟店一覧",
+      icon: "▤",
+      content: [
+        {
+          heading: "加盟店のステータス",
+          body: `・有効 → 現在稼働中\n・停止中 → 一時停止\n・解約済 → 契約終了\n\n※ステータスは変更履歴から自動で判定されます`,
+        },
+        {
+          heading: "変更履歴について",
+          body: `「入力」→「変更・停止入力」から、契約変更・停止・再開・解約などを記録できます。\n\n変更は有効日ベースで管理されるため、月の途中の変更も日割りで反映されます。`,
+        },
+      ],
+    },
+    {
+      id: "dashboard",
+      title: "ダッシュボード",
+      icon: "■",
+      content: [
+        {
+          heading: "今月着地予想",
+          body: `現在の実績に、月末までの追加日割り分を加え、停止・減額の影響を差し引いた予想値です。\n\n「計算ロジック」をクリックすると詳細な計算式を確認できます。`,
+        },
+        {
+          heading: "週次着地予想",
+          body: `毎週月曜日に「週予測を更新」ボタンを押すと、その週時点での着地予想が記録されます。週ごとの進捗推移を追うことができます。`,
+        },
+        {
+          heading: "意思決定アラート",
+          body: `再開予定日が近づいている会社、長期停止中の会社などを自動で検出してアラート表示します。`,
+        },
+      ],
+    },
+    {
+      id: "masters",
+      title: "マスタ設定",
+      icon: "⚙",
+      content: [
+        {
+          heading: "営業担当マスタ",
+          body: `営業担当者を登録します。加盟店一覧の「担当者」と入金管理の「担当別進捗」に反映されます。\n\n加盟店登録時に担当者を設定しておくと、入金管理で自動的に担当者が割り当てられます。`,
+        },
+        {
+          heading: "ブランドマスタ",
+          body: `買取ブランド（商材）を登録します。加盟店の予算設定や事業数字の商材別集計に使用されます。`,
+        },
+      ],
+    },
+    {
+      id: "input",
+      title: "データ入力",
+      icon: "+",
+      content: [
+        {
+          heading: "新規加盟店登録",
+          body: `「入力」→「新規加盟店登録」から、加盟店情報と商材別予算を登録します。\n\n請求IDは一意である必要があります。登録後は加盟店一覧に表示され、事業数字・入金管理と連携します。`,
+        },
+        {
+          heading: "変更・停止入力",
+          body: `既存加盟店の予算変更・停止・再開・解約を記録します。\n\n「有効日」を正確に入力することで、日割り計算や着地予想に正確に反映されます。`,
+        },
+      ],
+    },
+  ];
+
+  return (
+    <div className="p-6 max-w-3xl mx-auto space-y-4">
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900">使い方ガイド</h1>
+        <p className="text-sm text-slate-500 mt-1">各機能の詳細な使い方を確認できます</p>
+      </div>
+      {sections.map((sec) => (
+        <div key={sec.id} className={css.card}>
+          <button
+            className="w-full flex items-center justify-between p-4"
+            onClick={() => setOpen(open === sec.id ? null : sec.id)}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-mono text-slate-400">{sec.icon}</span>
+              <span className="font-semibold text-slate-800">{sec.title}</span>
+            </div>
+            <span className="text-slate-400 text-sm">{open === sec.id ? "▲" : "▼"}</span>
+          </button>
+          {open === sec.id && (
+            <div className="border-t border-slate-100 divide-y divide-slate-50">
+              {sec.content.map((item, i) => (
+                <div key={i} className="px-4 py-3">
+                  <h3 className="font-medium text-slate-700 mb-1 text-sm">{item.heading}</h3>
+                  <p className="text-sm text-slate-600 whitespace-pre-line leading-relaxed">{item.body}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
