@@ -1524,29 +1524,37 @@ export default function App() {
   const saveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
+  const applyData = (d: Record<string, unknown>) => {
+    setClients((d.clients as Client[]) || []);
+    setChangeLogs((d.changeLogs as ChangeLog[]) || []);
+    setMetrics((d.metrics as BusinessMetric[]) || []);
+    setOwners((d.owners as SalesOwner[]) || []);
+    setBrands((d.brands as BrandMaster[]) || []);
+    setWeeklyForecasts((d.weeklyForecasts as WeeklyForecastEntry[]) || []);
+    setPayments((d.payments as InvoicePayment[]) || []);
+    setPaymentOwnerLogs((d.paymentOwnerLogs as PaymentOwnerLog[]) || []);
+  };
+
   const load = async () => {
-    const { data } = await supabase
-      .from("app_state")
-      .select("data")
-      .eq("id", "main")
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from("app_state")
+        .select("data")
+        .eq("id", "main")
+        .single();
 
-    if (!data?.data) {
-      setLoaded(true);
-      return;
+      if (!error && data?.data) {
+        applyData(data.data as Record<string, unknown>);
+        localStorage.setItem("app_state_cache", JSON.stringify(data.data));
+      } else {
+        // Supabase失敗時はlocalStorageから復元
+        const cache = localStorage.getItem("app_state_cache");
+        if (cache) applyData(JSON.parse(cache));
+      }
+    } catch {
+      const cache = localStorage.getItem("app_state_cache");
+      if (cache) applyData(JSON.parse(cache));
     }
-
-    const d = data.data;
-
-    setClients(d.clients || []);
-    setChangeLogs(d.changeLogs || []);
-    setMetrics(d.metrics || []);
-    setOwners(d.owners || []);
-    setBrands(d.brands || []);
-    setWeeklyForecasts(d.weeklyForecasts || []);
-    setPayments(d.payments || []);
-    setPaymentOwnerLogs(d.paymentOwnerLogs || []);
-
     setLoaded(true);
   };
 
@@ -1556,22 +1564,23 @@ useEffect(() => {
   if (!loaded) return;
   if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
   saveTimerRef.current = setTimeout(async () => {
-    const { error } = await supabase.from("app_state").upsert({
-      id: "main",
-      data: {
-        clients,
-        changeLogs,
-        metrics,
-        owners,
-        brands,
-        weeklyForecasts,
-        payments,
-        paymentOwnerLogs,
-      },
-    });
-    if (error) {
-      console.error("Supabase save error:", error);
-      alert(`保存エラー: ${error.message}`);
+    const payload = {
+      clients,
+      changeLogs,
+      metrics,
+      owners,
+      brands,
+      weeklyForecasts,
+      payments,
+      paymentOwnerLogs,
+    };
+    // 常にlocalStorageにキャッシュ（Supabase障害時のフォールバック）
+    localStorage.setItem("app_state_cache", JSON.stringify(payload));
+    try {
+      const { error } = await supabase.from("app_state").upsert({ id: "main", data: payload });
+      if (error) console.error("Supabase save error:", error);
+    } catch (e) {
+      console.error("Supabase fetch error:", e);
     }
   }, 800);
 }, [loaded, clients, changeLogs, metrics, owners, brands, weeklyForecasts, payments, paymentOwnerLogs]);
