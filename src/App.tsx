@@ -47,7 +47,42 @@ type ViewKey =
   | "change"
   | "metrics"
   | "cup-analysis"
-  | "masters";
+  | "masters"
+  | "payment";
+
+// 入金ステータス（スプシと同じ選択肢）
+const PAYMENT_STATUSES = [
+  "入金済",
+  "入金待ち",
+  "口座振替待ち",
+  "連続未収",
+  "クレカ",
+] as const;
+type PaymentStatusLabel = typeof PAYMENT_STATUSES[number] | "";
+
+interface PaymentOwnerLog {
+  logId: string;
+  ownerId: string;
+  invoiceMonth: string;
+  date: string; // YYYY-MM-DD
+  note: string;
+}
+
+interface InvoicePayment {
+  invoiceId: string;        // 内部ID
+  invoiceNumber: string;    // 請求書番号 YYYYMM-XXXXX-N
+  billingId: string;        // 加盟店の請求ID
+  invoiceMonth: string;     // YYYY-MM
+  invoiceAmount: number;    // 請求額
+  paidAmount: number;       // 入金額
+  status: PaymentStatusLabel;
+  isSuspended: boolean;     // 停止済
+  isResumed: boolean;       // 再開済
+  unpaidSuspendDate: string;// 未入金停止日
+  assignee: string;         // 担当者
+  note: string;
+  dailyChecks: Record<string, boolean>; // 日別入金チェック "7/1"→true
+}
  
 interface CategoryBudgets {
   [category: string]: number;
@@ -1481,6 +1516,8 @@ export default function App() {
   const [owners, setOwners] = useState<SalesOwner[]>([]);
   const [brands, setBrands] = useState<BrandMaster[]>([]);
   const [weeklyForecasts, setWeeklyForecasts] = useState<WeeklyForecastEntry[]>([]);
+  const [payments, setPayments] = useState<InvoicePayment[]>([]);
+  const [paymentOwnerLogs, setPaymentOwnerLogs] = useState<PaymentOwnerLog[]>([]);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
   const load = async () => {
@@ -1503,6 +1540,8 @@ export default function App() {
     setOwners(d.owners || []);
     setBrands(d.brands || []);
     setWeeklyForecasts(d.weeklyForecasts || []);
+    setPayments(d.payments || []);
+    setPaymentOwnerLogs(d.paymentOwnerLogs || []);
 
     setLoaded(true);
   };
@@ -1521,12 +1560,14 @@ useEffect(() => {
         owners,
         brands,
         weeklyForecasts,
+        payments,
+        paymentOwnerLogs,
       },
     });
   };
 
   save();
-}, [loaded, clients, changeLogs, metrics, owners, brands, weeklyForecasts]);
+}, [loaded, clients, changeLogs, metrics, owners, brands, weeklyForecasts, payments, paymentOwnerLogs]);
 
 useEffect(() => {
   const today = new Date();
@@ -1595,6 +1636,7 @@ useEffect(() => {
     { key: "input-choice", label: "入力", icon: "+" },
     { key: "metrics", label: "事業数字", icon: "¥" },
     { key: "cup-analysis", label: "顧客単価分析", icon: "◐" },
+    { key: "payment", label: "入金管理", icon: "¥" },
     { key: "masters", label: "マスタ", icon: "⚙" },
   ];
 
@@ -1655,7 +1697,8 @@ useEffect(() => {
         {/* 上部フィルターバー */}
         {(view === "dashboard" ||
           view === "clients" ||
-          view === "cup-analysis") && (
+          view === "cup-analysis" ||
+          view === "payment") && (
           <header className="bg-white border-b border-slate-200 px-6 py-3">
             <div className="flex items-center gap-4 flex-wrap">
               <FilterField label="対象月">
@@ -1767,6 +1810,18 @@ useEffect(() => {
               metrics={metrics}
               filterCats={filterCats}
               owners={owners}
+            />
+          )}
+          {view === "payment" && (
+            <PaymentView
+              targetMonth={targetMonth}
+              clients={clients}
+              changeLogs={changeLogs}
+              payments={payments}
+              setPayments={setPayments}
+              owners={owners}
+              paymentOwnerLogs={paymentOwnerLogs}
+              setPaymentOwnerLogs={setPaymentOwnerLogs}
             />
           )}
           {view === "masters" && (
@@ -6303,6 +6358,1008 @@ function CUPAnalysis({
           owners={owners}
           onClose={() => setSelectedCat(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/* ---------- 入金管理 ---------- */
+const PAYMENT_STATUS_COLOR: Record<string, string> = {
+  "入金済":        "bg-emerald-50 text-emerald-700 border-emerald-300",
+  "入金待ち":      "bg-amber-50 text-amber-700 border-amber-300",
+  "口座振替待ち":  "bg-blue-50 text-blue-700 border-blue-300",
+  "連続未収":      "bg-red-50 text-red-700 border-red-300",
+  "クレカ":        "bg-purple-50 text-purple-700 border-purple-300",
+  "":              "bg-slate-50 text-slate-500 border-slate-200",
+};
+
+function makeInvoiceNumber(billingId: string, invoiceMonth: string, seq = 1) {
+  const [y, m] = invoiceMonth.split("-");
+  return `${y}${m}-${billingId}-${seq}`;
+}
+
+function makeBlankInvoice(c: Client, invoiceMonth: string, owners: SalesOwner[]): InvoicePayment {
+  const totalBudget = Object.values(c.categoryBudgets || {}).reduce(
+    (s, v) => s + (v as number), 0
+  );
+  const ownerName = owners.find((o) => o.ownerId === c.salesOwnerId)?.ownerName ?? "";
+  return {
+    invoiceId: uid(),
+    invoiceNumber: makeInvoiceNumber(c.billingId, invoiceMonth),
+    billingId: c.billingId,
+    invoiceMonth,
+    invoiceAmount: totalBudget,
+    paidAmount: 0,
+    status: "",
+    isSuspended: false,
+    isResumed: false,
+    unpaidSuspendDate: "",
+    assignee: ownerName,
+    note: "",
+    dailyChecks: {},
+  };
+}
+
+function PaymentView({
+  targetMonth,
+  clients,
+  changeLogs,
+  payments,
+  setPayments,
+  owners,
+  paymentOwnerLogs,
+  setPaymentOwnerLogs,
+}: {
+  targetMonth: string;
+  clients: Client[];
+  changeLogs: ChangeLog[];
+  payments: InvoicePayment[];
+  setPayments: React.Dispatch<React.SetStateAction<InvoicePayment[]>>;
+  owners: SalesOwner[];
+  paymentOwnerLogs: PaymentOwnerLog[];
+  setPaymentOwnerLogs: React.Dispatch<React.SetStateAction<PaymentOwnerLog[]>>;
+}) {
+  const [editTarget, setEditTarget] = useState<InvoicePayment | null>(null);
+  const [filterStatus, setFilterStatus] = useState<PaymentStatusLabel | "all" | "未入金">("all");
+  const [filterOwner, setFilterOwner] = useState<string>("all");
+  const [addingNew, setAddingNew] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [activeTab, setActiveTab] = useState<"list" | "owner">("list");
+
+  const [yStr, mStr] = targetMonth.split("-");
+  const dim = daysInMonth(+yStr, +mStr);
+  const monthEnd = new Date(+yStr, +mStr - 1, dim);
+  const days = Array.from({ length: dim }, (_, i) => i + 1);
+
+  // 当月アクティブ加盟店のデフォルト請求一覧 + 既存の入金データをマージ
+  const invoiceList = useMemo<InvoicePayment[]>(() => {
+    const result: InvoicePayment[] = [];
+    const coveredBillingIds = new Set<string>();
+
+    // 既存の入金レコード（当月分）を先に追加
+    for (const p of payments) {
+      if (p.invoiceMonth === targetMonth) {
+        result.push(p);
+        coveredBillingIds.add(p.billingId);
+      }
+    }
+
+    // アクティブ加盟店で未登録のものを自動追加
+    for (const c of clients) {
+      if (coveredBillingIds.has(c.billingId)) continue;
+      if (c.status === "withdrawn") continue;
+      const sd = parseD(c.startDate);
+      if (!sd || sd > monthEnd) continue;
+      const totalBudget = Object.values(c.categoryBudgets || {}).reduce(
+        (s, v) => s + (v as number), 0
+      );
+      if (totalBudget <= 0) continue;
+      const withdrawn = changeLogs.some(
+        (l) => l.billingId === c.billingId &&
+               l.changeType === "withdraw" &&
+               parseD(l.effectiveDate)! <= monthEnd
+      );
+      if (withdrawn) continue;
+      result.push(makeBlankInvoice(c, targetMonth, owners));
+    }
+
+    result.sort((a, b) => {
+      const sa = PAYMENT_STATUSES.indexOf(a.status as typeof PAYMENT_STATUSES[number]);
+      const sb = PAYMENT_STATUSES.indexOf(b.status as typeof PAYMENT_STATUSES[number]);
+      if (sa !== sb) return sb - sa; // 入金済を下
+      return b.invoiceAmount - a.invoiceAmount;
+    });
+    return result;
+  }, [targetMonth, clients, changeLogs, payments]);
+
+  // 未金額合計・入金額合計（合計行）
+  const totalUnpaid = invoiceList.reduce((s, i) => s + Math.max(0, i.invoiceAmount - i.paidAmount), 0);
+  const totalPaidAmt = invoiceList.reduce((s, i) => s + i.paidAmount, 0);
+
+  const getCompanyName = (billingId: string) =>
+    clients.find((c) => c.billingId === billingId)?.companyName ?? billingId;
+
+  const saveInvoice = (updated: InvoicePayment) => {
+    setPayments((prev) => {
+      const exists = prev.find((p) => p.invoiceId === updated.invoiceId);
+      if (exists) return prev.map((p) => p.invoiceId === updated.invoiceId ? updated : p);
+      return [...prev, updated];
+    });
+    setEditTarget(null);
+    setAddingNew(false);
+  };
+
+  const deleteInvoice = (invoiceId: string) => {
+    if (!confirm("この請求レコードを削除しますか？")) return;
+    setPayments((prev) => prev.filter((p) => p.invoiceId !== invoiceId));
+  };
+
+  const toggleCheck = (inv: InvoicePayment, field: "isSuspended" | "isResumed") => {
+    saveInvoice({ ...inv, invoiceId: inv.invoiceId || uid(), [field]: !inv[field] });
+  };
+
+  const toggleDailyCheck = (inv: InvoicePayment, day: number) => {
+    const key = `${+mStr}/${day}`;
+    saveInvoice({
+      ...inv,
+      invoiceId: inv.invoiceId || uid(),
+      dailyChecks: { ...inv.dailyChecks, [key]: !inv.dailyChecks?.[key] },
+    });
+  };
+
+  const filterCounts: Record<string, number> = { all: invoiceList.length, "未入金": 0 };
+  for (const s of [...PAYMENT_STATUSES, "" as const]) filterCounts[s] = 0;
+  for (const i of invoiceList) {
+    filterCounts[i.status || ""] = (filterCounts[i.status || ""] || 0) + 1;
+    if (!i.status || i.status === "入金待ち" || i.status === "連続未収")
+      filterCounts["未入金"]++;
+  }
+
+  const filterOptions: { key: PaymentStatusLabel | "all" | "未入金"; label: string }[] = [
+    { key: "all", label: "すべて" },
+    { key: "未入金", label: "未入金" },
+    ...PAYMENT_STATUSES.map((s) => ({ key: s as PaymentStatusLabel, label: s })),
+  ];
+
+  const filtered = useMemo(() => {
+    let list = invoiceList;
+    if (filterOwner !== "all") list = list.filter((i) => i.assignee === filterOwner);
+    if (filterStatus === "未入金") return list.filter((i) => !i.status || i.status === "入金待ち" || i.status === "連続未収");
+    if (filterStatus !== "all") return list.filter((i) => i.status === filterStatus);
+    return list;
+  }, [invoiceList, filterStatus, filterOwner]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-end justify-between">
+        <div>
+          <div className="text-xs text-slate-500">{targetMonth}</div>
+          <h1 className="text-2xl font-bold tracking-tight">入金管理</h1>
+        </div>
+        <div className="flex gap-2">
+          <button className={css.btnOutline} onClick={() => setShowImport(true)}>
+            転記インポート
+          </button>
+          <button
+            className={css.btn}
+            onClick={() => {
+              setAddingNew(true);
+              setEditTarget({
+                invoiceId: uid(),
+                invoiceNumber: "",
+                billingId: "",
+                invoiceMonth: targetMonth,
+                invoiceAmount: 0,
+                paidAmount: 0,
+                status: "",
+                isSuspended: false,
+                isResumed: false,
+                unpaidSuspendDate: "",
+                assignee: "",
+                note: "",
+                dailyChecks: {},
+              });
+            }}
+          >
+            + 手動追加
+          </button>
+        </div>
+      </div>
+
+      {/* タブ切替 */}
+      <div className="flex gap-1 border-b border-slate-200">
+        {([["list", "一覧"], ["owner", "担当別進捗"]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`px-4 py-2 text-sm border-b-2 transition ${
+              activeTab === key
+                ? "border-slate-900 font-medium text-slate-900"
+                : "border-transparent text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "list" && (<>
+      {/* 担当フィルター */}
+      <div className="flex gap-2 flex-wrap items-center">
+        <span className="text-xs text-slate-500">担当:</span>
+        {[{ ownerId: "all", ownerName: "全員" }, ...owners.filter((o) => o.isActive)].map((o) => {
+          const count = o.ownerId === "all"
+            ? invoiceList.length
+            : invoiceList.filter((i) => i.assignee === o.ownerName).length;
+          return (
+            <button
+              key={o.ownerId}
+              onClick={() => setFilterOwner(o.ownerId === "all" ? "all" : o.ownerName)}
+              className={`px-3 py-1 rounded border text-sm ${
+                filterOwner === (o.ownerId === "all" ? "all" : o.ownerName)
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white border-slate-300 text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              {o.ownerName}
+              <span className="ml-1 text-xs opacity-60">({count})</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ステータスフィルター */}
+      <div className="flex gap-2 flex-wrap">
+        {filterOptions.map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setFilterStatus(key as any)}
+            className={`px-3 py-1 rounded border text-sm ${
+              filterStatus === key
+                ? "bg-slate-900 text-white border-slate-900"
+                : "bg-white border-slate-300 text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            {label}
+            <span className="ml-1 text-xs opacity-60">({filterCounts[key] ?? 0})</span>
+          </button>
+        ))}
+      </div>
+      </>)}
+
+      {activeTab === "owner" && (
+        <OwnerProgressView
+          targetMonth={targetMonth}
+          owners={owners}
+          invoiceList={invoiceList}
+          paymentOwnerLogs={paymentOwnerLogs}
+          setPaymentOwnerLogs={setPaymentOwnerLogs}
+          getCompanyName={(id) => clients.find((c) => c.billingId === id)?.companyName ?? id}
+        />
+      )}
+
+      {/* メインテーブル（新雛形と同じ列順） */}
+      {activeTab === "list" && <div className={css.card}>
+        <div className="overflow-x-auto">
+          <table className={css.table} style={{ minWidth: `${640 + dim * 34}px` }}>
+            <thead>
+              {/* 合計行 */}
+              <tr className="bg-slate-100 text-xs font-semibold">
+                <td className="p-2 text-slate-600" colSpan={4}>合計</td>
+                <td className="p-2 text-right tabular-nums text-red-700">{yen(totalUnpaid)}</td>
+                <td className="p-2 text-right tabular-nums text-emerald-700">{yen(totalPaidAmt)}</td>
+                <td colSpan={3 + dim}></td>
+              </tr>
+              {/* ヘッダー行 */}
+              <tr>
+                <th className={css.th} style={{ minWidth: 88 }}>未入金停止日</th>
+                <th className={css.th} style={{ minWidth: 160 }}>会社名</th>
+                <th className={`${css.th} text-center`} style={{ minWidth: 52 }}>停止済</th>
+                <th className={`${css.th} text-center`} style={{ minWidth: 52 }}>再開済</th>
+                <th className={`${css.th} text-right`} style={{ minWidth: 96 }}>未金額</th>
+                <th className={`${css.th} text-right`} style={{ minWidth: 96 }}>入金額</th>
+                <th className={css.th} style={{ minWidth: 60 }}>担当者</th>
+                <th className={css.th} style={{ minWidth: 100 }}>ステータス</th>
+                <th className={css.th} style={{ minWidth: 120 }}>メモ</th>
+                {days.map((d) => (
+                  <th key={d} className={`${css.th} text-center px-0`} style={{ minWidth: 30, fontSize: 10 }}>
+                    {+mStr}/{d}
+                  </th>
+                ))}
+                <th className={css.th} style={{ minWidth: 60 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((inv) => {
+                const unpaid = Math.max(0, inv.invoiceAmount - inv.paidAmount);
+                const statusColor = PAYMENT_STATUS_COLOR[inv.status] ?? PAYMENT_STATUS_COLOR[""];
+                return (
+                  <tr
+                    key={inv.invoiceId || inv.billingId}
+                    className={`hover:bg-slate-50 ${inv.isSuspended ? "bg-red-50/40" : ""}`}
+                  >
+                    {/* A: 未入金停止日 */}
+                    <td className={`${css.td} text-xs`}>{inv.unpaidSuspendDate || ""}</td>
+                    {/* B: 会社名 */}
+                    <td className={`${css.td} font-medium text-sm`}>{getCompanyName(inv.billingId)}</td>
+                    {/* C: 停止済 */}
+                    <td className={`${css.td} text-center`}>
+                      <input
+                        type="checkbox"
+                        checked={!!inv.isSuspended}
+                        onChange={() => toggleCheck(inv, "isSuspended")}
+                      />
+                    </td>
+                    {/* D: 再開済 */}
+                    <td className={`${css.td} text-center`}>
+                      <input
+                        type="checkbox"
+                        checked={!!inv.isResumed}
+                        onChange={() => toggleCheck(inv, "isResumed")}
+                      />
+                    </td>
+                    {/* E: 未金額 */}
+                    <td className={`${css.td} text-right tabular-nums text-sm ${unpaid > 0 ? "text-red-700 font-medium" : "text-slate-400"}`}>
+                      {unpaid > 0 ? yen(unpaid) : ""}
+                    </td>
+                    {/* F: 入金額 */}
+                    <td className={`${css.td} text-right tabular-nums text-sm ${inv.paidAmount > 0 ? "text-emerald-700 font-medium" : "text-slate-400"}`}>
+                      {inv.paidAmount > 0 ? yen(inv.paidAmount) : ""}
+                    </td>
+                    {/* G: 担当者 */}
+                    <td className={`${css.td} text-xs`}>{inv.assignee}</td>
+                    {/* H: ステータス */}
+                    <td className={css.td}>
+                      {inv.status ? (
+                        <span className={`inline-block text-xs px-2 py-0.5 rounded border ${statusColor}`}>
+                          {inv.status}
+                        </span>
+                      ) : ""}
+                    </td>
+                    {/* I: メモ */}
+                    <td className={`${css.td} text-xs text-slate-500 max-w-[120px] truncate`}>{inv.note}</td>
+                    {/* J〜: 日別チェック */}
+                    {days.map((d) => {
+                      const key = `${+mStr}/${d}`;
+                      return (
+                        <td key={d} className={`${css.td} text-center px-0`}>
+                          <input
+                            type="checkbox"
+                            checked={!!inv.dailyChecks?.[key]}
+                            onChange={() => toggleDailyCheck(inv, d)}
+                          />
+                        </td>
+                      );
+                    })}
+                    <td className={css.td}>
+                      <div className="flex gap-1 justify-end">
+                        <button
+                          className="text-xs px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50"
+                          onClick={() => setEditTarget({ ...inv, invoiceId: inv.invoiceId || uid() })}
+                        >
+                          編集
+                        </button>
+                        {payments.find((p) => p.invoiceId === inv.invoiceId) && (
+                          <button
+                            className="text-xs text-slate-300 hover:text-red-500"
+                            onClick={() => deleteInvoice(inv.invoiceId)}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={9 + dim + 1} className="text-center py-8 text-sm text-slate-500">
+                    該当する請求がありません
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>}
+
+      {/* 編集モーダル */}
+      {editTarget && (
+        <PaymentModal
+          inv={editTarget}
+          clients={clients}
+          isNew={addingNew}
+          onSave={saveInvoice}
+          onClose={() => { setEditTarget(null); setAddingNew(false); }}
+        />
+      )}
+
+      {/* 転記インポートモーダル */}
+      {showImport && (
+        <ImportModal
+          clients={clients}
+          invoiceMonth={targetMonth}
+          existingPayments={payments}
+          onImport={(newPayments) => {
+            setPayments((prev) => {
+              let next = [...prev];
+              for (const p of newPayments) {
+                const idx = next.findIndex((x) => x.invoiceId === p.invoiceId);
+                if (idx >= 0) next[idx] = p;
+                else next.push(p);
+              }
+              return next;
+            });
+            setShowImport(false);
+          }}
+          onClose={() => setShowImport(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PaymentModal({
+  inv,
+  clients,
+  isNew,
+  onSave,
+  onClose,
+}: {
+  inv: InvoicePayment;
+  clients: Client[];
+  isNew: boolean;
+  onSave: (updated: InvoicePayment) => void;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState<InvoicePayment>(inv);
+  const set = (patch: Partial<InvoicePayment>) => setForm((f) => ({ ...f, ...patch }));
+
+  const companyName = clients.find((c) => c.billingId === form.billingId)?.companyName ?? form.billingId;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className={`${css.card} w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto`}>
+        <div className={`${css.cardHeader} flex justify-between`}>
+          <span>{isNew ? "請求追加" : "入金情報編集"}</span>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-lg leading-none">×</button>
+        </div>
+        <div className={`${css.cardBody} space-y-3`}>
+          {/* 会社名（新規は加盟店選択、既存は表示のみ） */}
+          {isNew ? (
+            <Field label="加盟店">
+              <select
+                className={css.input}
+                value={form.billingId}
+                onChange={(e) => {
+                  const c = clients.find((x) => x.billingId === e.target.value);
+                  const totalBudget = c ? Object.values(c.categoryBudgets || {}).reduce((s, v) => s + (v as number), 0) : 0;
+                  set({
+                    billingId: e.target.value,
+                    invoiceAmount: totalBudget,
+                    invoiceNumber: c ? makeInvoiceNumber(e.target.value, form.invoiceMonth) : "",
+                  });
+                }}
+              >
+                <option value="">選択してください</option>
+                {clients.filter((c) => c.status !== "withdrawn").map((c) => (
+                  <option key={c.billingId} value={c.billingId}>{c.companyName}</option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <div className="text-sm font-medium py-1">{companyName}</div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="請求書番号">
+              <input className={css.input} value={form.invoiceNumber}
+                onChange={(e) => set({ invoiceNumber: e.target.value })} />
+            </Field>
+            <Field label="金額">
+              <input className={css.input} type="number" value={form.invoiceAmount || ""}
+                onChange={(e) => set({ invoiceAmount: Number(e.target.value) || 0 })} />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="ステータス">
+              <select className={css.input} value={form.status}
+                onChange={(e) => set({ status: e.target.value as PaymentStatusLabel })}>
+                <option value="">未設定</option>
+                {PAYMENT_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="担当者">
+              <input className={css.input} value={form.assignee}
+                onChange={(e) => set({ assignee: e.target.value })} />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="入金額">
+              <input className={css.input} type="number" value={form.paidAmount || ""}
+                onChange={(e) => set({ paidAmount: Number(e.target.value) || 0 })} />
+            </Field>
+            <Field label="未入金停止日">
+              <input className={css.input} type="date" value={form.unpaidSuspendDate}
+                onChange={(e) => set({ unpaidSuspendDate: e.target.value })} />
+            </Field>
+          </div>
+
+          <div className="flex gap-6">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={form.isSuspended}
+                onChange={(e) => set({ isSuspended: e.target.checked })} />
+              停止済
+            </label>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={form.isResumed}
+                onChange={(e) => set({ isResumed: e.target.checked })} />
+              再開済
+            </label>
+          </div>
+
+          <Field label="メモ">
+            <input className={css.input} value={form.note}
+              onChange={(e) => set({ note: e.target.value })} />
+          </Field>
+
+          {form.invoiceAmount > 0 && form.paidAmount > 0 && form.paidAmount < form.invoiceAmount && (
+            <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">
+              未収: {yen(form.invoiceAmount - form.paidAmount)}（一部入金）
+            </div>
+          )}
+
+          <div className="flex gap-2 justify-end pt-1">
+            <button className={css.btnOutline} onClick={onClose}>キャンセル</button>
+            <button className={css.btn} onClick={() => onSave(form)}>保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 転記インポート ---------- */
+interface ParsedImportRow {
+  companyNameRaw: string;
+  invoiceNumber: string;
+  invoiceAmount: number;
+  unpaidAmount: number;
+  paymentMethod: string;
+  dateRaw: string;
+  matchedBillingId: string;
+  overrideBillingId: string;
+}
+
+function parseTransferText(text: string, clients: Client[]): ParsedImportRow[] {
+  const INVOICE_RE = /^\d{6}-[\d]+-\d+$/;
+  const parseAmt = (s: string) => Number((s || "").replace(/[,¥\s]/g, "")) || 0;
+
+  return text
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.trim())
+    .map((line) => {
+      const cols = line.split("\t");
+      // 請求書番号列を自動検出
+      const invCol = cols.findIndex((c) => INVOICE_RE.test(c.trim()));
+      if (invCol < 0) return null;
+
+      const companyNameRaw = (cols[invCol - 2] ?? "").trim();
+      const invoiceNumber = cols[invCol].trim();
+      const invoiceAmount = parseAmt(cols[invCol + 1]);
+      const unpaidAmount = parseAmt(cols[invCol + 2]);
+      const paymentMethod = (cols[invCol + 3] ?? "").trim();
+      const dateRaw = (cols[invCol + 5] ?? "").trim();
+
+      // billingId のマッチ: 請求書番号の中間部 YYYYMM-{billingId}-N
+      const parts = invoiceNumber.split("-");
+      const idFromInvoice = parts[1] ?? "";
+
+      let matchedBillingId = "";
+      // 1. 請求書番号の中間部でマッチ
+      if (idFromInvoice) {
+        const exact = clients.find((c) => c.billingId === idFromInvoice);
+        if (exact) matchedBillingId = exact.billingId;
+      }
+      // 2. 会社名で部分マッチ
+      if (!matchedBillingId && companyNameRaw) {
+        const byName = clients.find(
+          (c) =>
+            c.companyName.includes(companyNameRaw) ||
+            companyNameRaw.includes(c.companyName)
+        );
+        if (byName) matchedBillingId = byName.billingId;
+      }
+
+      return {
+        companyNameRaw,
+        invoiceNumber,
+        invoiceAmount,
+        unpaidAmount,
+        paymentMethod,
+        dateRaw,
+        matchedBillingId,
+        overrideBillingId: matchedBillingId,
+      } satisfies ParsedImportRow;
+    })
+    .filter((r): r is ParsedImportRow => r !== null);
+}
+
+function ImportModal({
+  clients,
+  invoiceMonth,
+  existingPayments,
+  onImport,
+  onClose,
+}: {
+  clients: Client[];
+  invoiceMonth: string;
+  existingPayments: InvoicePayment[];
+  onImport: (rows: InvoicePayment[]) => void;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [rows, setRows] = useState<ParsedImportRow[]>([]);
+  const [parsed, setParsed] = useState(false);
+
+  const parse = () => {
+    const result = parseTransferText(text, clients);
+    setRows(result);
+    setParsed(true);
+  };
+
+  const updateRow = (idx: number, patch: Partial<ParsedImportRow>) =>
+    setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+
+  // 請求書番号から月を推定（YYYYMM-...）
+  const monthFromInvoice = (invNum: string) => {
+    const m = invNum.match(/^(\d{4})(\d{2})-/);
+    if (!m) return invoiceMonth;
+    return `${m[1]}-${m[2]}`;
+  };
+
+  const doImport = () => {
+    const results: InvoicePayment[] = rows
+      .filter((r) => r.overrideBillingId)
+      .map((r) => {
+        const month = monthFromInvoice(r.invoiceNumber);
+        const existing = existingPayments.find(
+          (p) => p.billingId === r.overrideBillingId && p.invoiceMonth === month
+        );
+        const paidAmount = r.invoiceAmount - r.unpaidAmount;
+        return {
+          invoiceId: existing?.invoiceId ?? uid(),
+          invoiceNumber: r.invoiceNumber,
+          billingId: r.overrideBillingId,
+          invoiceMonth: month,
+          invoiceAmount: r.invoiceAmount,
+          paidAmount: Math.max(0, paidAmount),
+          status: (paidAmount <= 0 ? "入金待ち" : paidAmount >= r.invoiceAmount ? "入金済" : "入金待ち") as PaymentStatusLabel,
+          isSuspended: existing?.isSuspended ?? false,
+          isResumed: existing?.isResumed ?? false,
+          unpaidSuspendDate: existing?.unpaidSuspendDate ?? "",
+          assignee: existing?.assignee ?? "",
+          note: r.paymentMethod ? `${r.paymentMethod}${r.dateRaw ? " " + r.dateRaw : ""}` : (existing?.note ?? ""),
+          dailyChecks: existing?.dailyChecks ?? {},
+        };
+      });
+    onImport(results);
+  };
+
+  const unmatched = rows.filter((r) => !r.overrideBillingId).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className={`${css.card} w-full max-w-4xl mx-4 max-h-[90vh] flex flex-col`}>
+        <div className={`${css.cardHeader} flex justify-between shrink-0`}>
+          <span>転記インポート</span>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-lg leading-none">×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          <div className={`${css.cardBody} space-y-3`}>
+            {!parsed ? (
+              <>
+                <p className="text-sm text-slate-600">
+                  未収一覧のデータをコピーしてそのまま貼り付けてください。
+                </p>
+                <textarea
+                  className={`${css.input} font-mono text-xs`}
+                  rows={10}
+                  placeholder={"銀座屋前橋南店\tみんなの買取\t202606-18812-2\t209,000\t209,000\tクレジットカード\t\t2026/06/17\t未収\t明細一覧\n\t株式会社桜空\t..."}
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                />
+                <div className="flex justify-end">
+                  <button className={css.btn} onClick={parse} disabled={!text.trim()}>
+                    解析
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <div className="text-sm">
+                    <span className="font-medium">{rows.length}件</span> 解析済
+                    {unmatched > 0 && (
+                      <span className="ml-2 text-amber-600">（{unmatched}件 未マッチ → 手動で加盟店を選択してください）</span>
+                    )}
+                  </div>
+                  <button
+                    className={css.btnGhost}
+                    onClick={() => { setParsed(false); setRows([]); }}
+                  >
+                    やり直す
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className={css.table}>
+                    <thead>
+                      <tr>
+                        <th className={css.th}>転記の会社名</th>
+                        <th className={css.th}>請求書番号</th>
+                        <th className={`${css.th} text-right`}>請求額</th>
+                        <th className={`${css.th} text-right`}>未収額</th>
+                        <th className={css.th}>入金方法</th>
+                        <th className={css.th}>日付</th>
+                        <th className={css.th}>マッチした加盟店</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, idx) => (
+                        <tr key={idx} className={!r.overrideBillingId ? "bg-amber-50" : ""}>
+                          <td className={`${css.td} text-sm`}>{r.companyNameRaw}</td>
+                          <td className={`${css.td} text-xs text-slate-500`}>{r.invoiceNumber}</td>
+                          <td className={`${css.td} text-right tabular-nums`}>{yen(r.invoiceAmount)}</td>
+                          <td className={`${css.td} text-right tabular-nums ${r.unpaidAmount > 0 ? "text-red-600" : "text-emerald-600"}`}>
+                            {yen(r.unpaidAmount)}
+                          </td>
+                          <td className={`${css.td} text-xs`}>{r.paymentMethod}</td>
+                          <td className={`${css.td} text-xs`}>{r.dateRaw}</td>
+                          <td className={css.td}>
+                            <select
+                              className={`${css.input} text-xs ${!r.overrideBillingId ? "border-amber-400" : ""}`}
+                              value={r.overrideBillingId}
+                              onChange={(e) => updateRow(idx, { overrideBillingId: e.target.value })}
+                            >
+                              <option value="">── 未マッチ（スキップ）</option>
+                              {clients
+                                .filter((c) => c.status !== "withdrawn")
+                                .map((c) => (
+                                  <option key={c.billingId} value={c.billingId}>
+                                    {c.companyName}
+                                  </option>
+                                ))}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex gap-2 justify-end pt-1 shrink-0">
+                  <button className={css.btnOutline} onClick={onClose}>キャンセル</button>
+                  <button
+                    className={css.btn}
+                    onClick={doImport}
+                    disabled={rows.filter((r) => r.overrideBillingId).length === 0}
+                  >
+                    {rows.filter((r) => r.overrideBillingId).length}件をインポート
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+/* ---------- 担当別進捗 ---------- */
+function OwnerProgressView({
+  targetMonth,
+  owners,
+  invoiceList,
+  paymentOwnerLogs,
+  setPaymentOwnerLogs,
+  getCompanyName,
+}: {
+  targetMonth: string;
+  owners: SalesOwner[];
+  invoiceList: InvoicePayment[];
+  paymentOwnerLogs: PaymentOwnerLog[];
+  setPaymentOwnerLogs: React.Dispatch<React.SetStateAction<PaymentOwnerLog[]>>;
+  getCompanyName: (billingId: string) => string;
+}) {
+  const [selectedOwner, setSelectedOwner] = useState<string>(owners.find((o) => o.isActive)?.ownerId ?? "");
+  const [editingDate, setEditingDate] = useState<string | null>(null);
+
+  const [yStr, mStr] = targetMonth.split("-");
+  const dim = daysInMonth(+yStr, +mStr);
+  const days = Array.from({ length: dim }, (_, i) => {
+    const d = i + 1;
+    const dateStr = `${yStr}-${mStr}-${String(d).padStart(2, "0")}`;
+    return { d, dateStr, label: `${+mStr}/${d}` };
+  });
+
+  const activeOwners = owners.filter((o) => o.isActive);
+
+  const ownerStats = useMemo(() => activeOwners.map((o) => {
+    const invs = invoiceList.filter((i) => i.assignee === o.ownerName);
+    const total = invs.reduce((s, i) => s + i.invoiceAmount, 0);
+    const unpaid = invs.reduce((s, i) => s + Math.max(0, i.invoiceAmount - i.paidAmount), 0);
+    const paidCount = invs.filter((i) => i.status === "入金済" || i.status === "クレカ").length;
+    return { owner: o, invs, total, unpaid, paidCount };
+  }), [activeOwners, invoiceList]);
+
+  const ownerName = owners.find((o) => o.ownerId === selectedOwner)?.ownerName ?? "";
+  const ownerInvs = invoiceList.filter((i) => i.assignee === ownerName);
+  const logsForOwner = paymentOwnerLogs.filter(
+    (l) => l.ownerId === selectedOwner && l.invoiceMonth === targetMonth
+  );
+  const getLog = (date: string) => logsForOwner.find((l) => l.date === date);
+
+  const saveLog = (date: string, note: string) => {
+    setPaymentOwnerLogs((prev) => {
+      const exists = prev.find(
+        (l) => l.ownerId === selectedOwner && l.invoiceMonth === targetMonth && l.date === date
+      );
+      if (exists) {
+        return note.trim()
+          ? prev.map((l) => l.logId === exists.logId ? { ...l, note } : l)
+          : prev.filter((l) => l.logId !== exists.logId);
+      }
+      if (!note.trim()) return prev;
+      return [...prev, { logId: uid(), ownerId: selectedOwner, invoiceMonth: targetMonth, date, note }];
+    });
+    setEditingDate(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* 担当サマリーカード */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {ownerStats.map(({ owner, invs, total, unpaid, paidCount }) => (
+          <button
+            key={owner.ownerId}
+            onClick={() => setSelectedOwner(owner.ownerId)}
+            className={`${css.card} p-3 text-left transition hover:shadow-md ${
+              selectedOwner === owner.ownerId ? "ring-2 ring-slate-900" : ""
+            }`}
+          >
+            <div className="font-semibold text-sm">{owner.ownerName}</div>
+            <div className="text-xs text-slate-500 mt-0.5">{invs.length}件</div>
+            <div className="mt-2 space-y-0.5">
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">請求</span>
+                <span className="tabular-nums font-medium">{yen(total)}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">未収</span>
+                <span className={`tabular-nums font-medium ${unpaid > 0 ? "text-red-600" : "text-slate-400"}`}>
+                  {unpaid > 0 ? yen(unpaid) : "—"}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">入金済</span>
+                <span className="tabular-nums text-emerald-700">{paidCount}/{invs.length}件</span>
+              </div>
+            </div>
+            <div className="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 rounded-full"
+                style={{ width: `${invs.length > 0 ? (paidCount / invs.length) * 100 : 0}%` }}
+              />
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {selectedOwner && (
+        <div className="grid md:grid-cols-2 gap-4">
+          {/* 担当案件リスト */}
+          <div className={css.card}>
+            <div className={css.cardHeader}>{ownerName} の担当案件</div>
+            <div className="overflow-y-auto max-h-96">
+              <table className={css.table}>
+                <thead>
+                  <tr>
+                    <th className={css.th}>会社名</th>
+                    <th className={`${css.th} text-right`}>未収</th>
+                    <th className={css.th}>状況</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ownerInvs.length === 0 && (
+                    <tr><td colSpan={3} className="text-center py-6 text-sm text-slate-400">案件なし</td></tr>
+                  )}
+                  {ownerInvs.map((inv) => {
+                    const unpaid = Math.max(0, inv.invoiceAmount - inv.paidAmount);
+                    const statusColor = PAYMENT_STATUS_COLOR[inv.status] ?? PAYMENT_STATUS_COLOR[""];
+                    return (
+                      <tr key={inv.invoiceId} className="hover:bg-slate-50">
+                        <td className={`${css.td} text-sm`}>{getCompanyName(inv.billingId)}</td>
+                        <td className={`${css.td} text-right tabular-nums text-sm ${unpaid > 0 ? "text-red-600" : "text-slate-400"}`}>
+                          {unpaid > 0 ? yen(unpaid) : "—"}
+                        </td>
+                        <td className={css.td}>
+                          {inv.status ? (
+                            <span className={`inline-block text-xs px-1.5 py-0.5 rounded border ${statusColor}`}>
+                              {inv.status}
+                            </span>
+                          ) : <span className="text-xs text-slate-300">未設定</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* 日別行動記録 */}
+          <div className={css.card}>
+            <div className={css.cardHeader}>{ownerName} の日別行動記録</div>
+            <div className="overflow-y-auto max-h-96">
+              <table className={css.table}>
+                <thead>
+                  <tr>
+                    <th className={css.th} style={{ width: 70 }}>日付</th>
+                    <th className={css.th}>行動メモ</th>
+                    <th className={css.th} style={{ width: 40 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {days.map(({ dateStr, label }) => {
+                    const log = getLog(dateStr);
+                    const isEditing = editingDate === dateStr;
+                    const today = new Date().toISOString().substring(0, 10);
+                    const isPast = dateStr <= today;
+                    return (
+                      <tr key={dateStr} className={log ? "bg-blue-50/40" : ""}>
+                        <td className={`${css.td} text-xs font-medium text-slate-600`}>{label}</td>
+                        <td className={css.td}>
+                          {isEditing ? (
+                            <input
+                              autoFocus
+                              className={`${css.input} text-xs`}
+                              defaultValue={log?.note ?? ""}
+                              onBlur={(e) => saveLog(dateStr, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveLog(dateStr, (e.target as HTMLInputElement).value);
+                                if (e.key === "Escape") setEditingDate(null);
+                              }}
+                            />
+                          ) : (
+                            <span
+                              className={`text-xs block min-h-[20px] cursor-pointer ${
+                                log ? "text-slate-800" : isPast ? "text-slate-300 hover:text-slate-500" : "text-slate-200"
+                              }`}
+                              onClick={() => isPast && setEditingDate(dateStr)}
+                            >
+                              {log?.note || (isPast ? "クリックして記録" : "")}
+                            </span>
+                          )}
+                        </td>
+                        <td className={`${css.td} text-center`}>
+                          {log && !isEditing && (
+                            <button className="text-xs text-slate-300 hover:text-red-400" onClick={() => saveLog(dateStr, "")}>✕</button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
