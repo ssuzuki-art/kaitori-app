@@ -1554,7 +1554,7 @@ export default function App() {
 useEffect(() => {
   if (!loaded) return;
   const save = async () => {
-    await supabase.from("app_state").upsert({
+    const { error } = await supabase.from("app_state").upsert({
       id: "main",
       data: {
         clients,
@@ -1567,6 +1567,10 @@ useEffect(() => {
         paymentOwnerLogs,
       },
     });
+    if (error) {
+      console.error("Supabase save error:", error);
+      alert(`保存エラー: ${error.message}`);
+    }
   };
 
   save();
